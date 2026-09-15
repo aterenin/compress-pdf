@@ -25,9 +25,12 @@ pub enum ColorModel {
 pub enum ColorSpace {
     Device(ColorModel),
     /// Palette lookup into `base`; `hival` is the highest valid index.
+    /// `palette` is set when the base was a mapped space: the palette
+    /// converted to `base`, which the dictionary must then be given.
     Indexed {
         base: ColorModel,
         hival: u8,
+        palette: Option<Vec<u8>>,
     },
     /// Separation, DeviceN or Lab: `components` samples per pixel that a
     /// [`Mapping`] built from `source` turns into `model`.
@@ -102,7 +105,7 @@ pub fn read_info(doc: &Document, dict: &Dictionary) -> Option<ImageInfo> {
         .get(b"ImageMask")
         .and_then(Object::as_bool)
         .unwrap_or(false);
-    let filters = filters(dict);
+    let filters = filters(doc, dict);
     // JPX codestreams carry their own depth and color space; the dictionary
     // may omit both.
     let jpx = filters.iter().any(|f| f == "JPXDecode");
@@ -147,13 +150,26 @@ fn icc_profile_id(doc: &Document, dict: &Dictionary) -> Option<lopdf::ObjectId> 
     items.get(1)?.as_reference().ok()
 }
 
-fn filters(dict: &Dictionary) -> Vec<String> {
-    match dict.get(b"Filter") {
-        Ok(Object::Name(n)) => vec![String::from_utf8_lossy(n).into_owned()],
-        Ok(Object::Array(items)) => items
+/// Filter names; the entry and its elements may be indirect.
+fn filters(doc: &Document, dict: &Dictionary) -> Vec<String> {
+    let Ok(filter) = dict.get(b"Filter") else {
+        return Vec::new();
+    };
+    let deref = |o: &Object| {
+        doc.dereference(o)
+            .map(|(_, o)| o.clone())
+            .unwrap_or_else(|_| o.clone())
+    };
+    match deref(filter) {
+        Object::Name(n) => vec![String::from_utf8_lossy(&n).into_owned()],
+        Object::Array(items) => items
             .iter()
-            .filter_map(|o| o.as_name().ok())
-            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .filter_map(|o| {
+                deref(o)
+                    .as_name()
+                    .ok()
+                    .map(|n| String::from_utf8_lossy(n).into_owned())
+            })
             .collect(),
         _ => Vec::new(),
     }
@@ -185,6 +201,8 @@ fn array_color_space(doc: &Document, items: &[Object]) -> ColorSpace {
         b"CalRGB" => ColorSpace::Device(ColorModel::Rgb),
         b"CalGray" => ColorSpace::Device(ColorModel::Gray),
         b"Separation" | b"DeviceN" | b"Lab" => mapped(doc, items),
+        // A bare family name in a one-element array.
+        _ if items.len() == 1 => color_space(doc, &items[0]),
         other => ColorSpace::Other(String::from_utf8_lossy(other).into_owned()),
     }
 }
@@ -258,9 +276,51 @@ fn indexed(doc: &Document, items: &[Object]) -> ColorSpace {
         (Some(ColorSpace::Device(base)), 0..=255) => ColorSpace::Indexed {
             base,
             hival: hival as u8,
+            palette: None,
         },
+        (Some(ColorSpace::Mapped { model, source, .. }), 0..=255) => {
+            match mapped_palette(doc, items.get(3), &source, hival as usize + 1) {
+                Some(palette) => ColorSpace::Indexed {
+                    base: model,
+                    hival: hival as u8,
+                    palette: Some(palette),
+                },
+                None => ColorSpace::Other("Indexed palette does not map".into()),
+            }
+        }
         _ => ColorSpace::Other("Indexed with unsupported base".into()),
     }
+}
+
+/// Run a palette (string or stream) through a mapped base space so the
+/// image can be described in the base's device model.
+fn mapped_palette(
+    doc: &Document,
+    lookup: Option<&Object>,
+    source: &Object,
+    entries: usize,
+) -> Option<Vec<u8>> {
+    let lookup = doc.dereference(lookup?).map(|(_, o)| o).ok()?;
+    let bytes = match lookup {
+        Object::String(s, _) => s.clone(),
+        Object::Stream(s) => s.decompressed_content_with_limit(1 << 20).ok()?,
+        _ => return None,
+    };
+    let mapping = Mapping::build(doc, source)?;
+    let n = mapping.components;
+    if bytes.len() < entries * n {
+        return None;
+    }
+    let mut memo = Memo::new(&mapping, mapping.default_decode(), 8);
+    let mut out = Vec::with_capacity(entries * components(mapping.model));
+    let mut tuple = vec![0u16; n];
+    for entry in bytes[..entries * n].chunks(n) {
+        for (t, b) in tuple.iter_mut().zip(entry) {
+            *t = u16::from(*b);
+        }
+        out.extend_from_slice(memo.lookup(&tuple)?);
+    }
+    Some(out)
 }
 
 fn device_model(name: &[u8]) -> Option<ColorModel> {
@@ -632,7 +692,7 @@ mod mapping_tests {
 
 #[cfg(test)]
 mod tests {
-    use lopdf::dictionary;
+    use lopdf::{Stream, dictionary};
 
     use super::*;
 
@@ -672,6 +732,55 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(info.color, ColorSpace::Other(_)));
+    }
+
+    #[test]
+    fn indexed_over_a_mapped_base_gets_a_device_palette() {
+        let mut doc = Document::with_version("1.5");
+        // Tint 1 is full black in the DeviceGray alternate (1 - x).
+        let f = doc.add_object(Stream::new(
+            dictionary! { "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![1.into()], "C1" => vec![0.into()], "N" => 1 },
+            vec![],
+        ));
+        let sep: Object = vec![
+            "Separation".into(),
+            "Spot".into(),
+            "DeviceGray".into(),
+            f.into(),
+        ]
+        .into();
+        let info = read_info(
+            &doc,
+            &dictionary! { "Width" => 1, "Height" => 1, "BitsPerComponent" => 8,
+            "ColorSpace" => vec!["Indexed".into(), sep, 2.into(), Object::string_literal(vec![0u8, 128, 255])] },
+        )
+        .unwrap();
+        assert_eq!(info.class(), Class::Indexed);
+        let ColorSpace::Indexed {
+            base,
+            hival,
+            palette,
+        } = info.color
+        else {
+            panic!("not indexed");
+        };
+        assert_eq!((base, hival), (ColorModel::Gray, 2));
+        assert_eq!(palette, Some(vec![255, 127, 0]));
+    }
+
+    #[test]
+    fn indirect_filters_and_wrapped_names_resolve() {
+        let mut doc = Document::with_version("1.5");
+        let filter = doc.add_object(Object::Name(b"DCTDecode".to_vec()));
+        let info = read_info(
+            &doc,
+            &dictionary! { "Width" => 1, "Height" => 1, "BitsPerComponent" => 8,
+            "ColorSpace" => vec!["DeviceRGB".into()], "Filter" => filter },
+        )
+        .unwrap();
+        assert_eq!(info.color, ColorSpace::Device(ColorModel::Rgb));
+        assert_eq!(info.image_codec(), Some("DCTDecode"));
     }
 
     #[test]

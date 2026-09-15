@@ -187,7 +187,7 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
     }
     write_back(doc, task.id, &prepared.raster, &best);
     if prepared.converted || prepared.reduced || prepared.mapped {
-        set_color_space(doc, task.id, prepared.raster.format);
+        set_color_space(doc, task.id, prepared.raster.format, &task.info);
     }
     if let Some(unit) = prepared.crop {
         wrap_in_form(doc, task.id, unit);
@@ -237,7 +237,14 @@ fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
         crop,
         resized,
         converted,
-        mapped: matches!(task.info.color, classify::ColorSpace::Mapped { .. }),
+        mapped: matches!(
+            task.info.color,
+            classify::ColorSpace::Mapped { .. }
+                | classify::ColorSpace::Indexed {
+                    palette: Some(_),
+                    ..
+                }
+        ),
     })
 }
 
@@ -258,11 +265,13 @@ fn crop_step(raster: Raster, task: &Task<'_>) -> (Raster, Option<[f32; 4]>) {
 /// content, the stream framing, and a cross-reference entry.
 const FORM_OVERHEAD: u64 = 200;
 
-/// Crop only when the preset asks and the crop is expected to save more
-/// than the wrapper form costs, estimated as the invisible fraction of the
-/// bytes currently in the file. Color-key masks survive cropping unchanged
-/// because they act per sample; soft masks with a `Matte` are refused by
-/// the mask code.
+/// Crop only when the preset asks, at least a sixteenth of the area is
+/// invisible (a clip that shaves a pixel off each edge is not worth a
+/// wrapper form and changes how renderers align the image), and the crop
+/// is expected to save more than the wrapper form costs, estimated as the
+/// invisible fraction of the bytes currently in the file. Color-key masks
+/// survive cropping unchanged because they act per sample; soft masks
+/// with a `Matte` are refused by the mask code.
 fn crop_target(raster: &Raster, task: &Task<'_>) -> Option<transform::PixelRect> {
     if !task.config.clip_images {
         return None;
@@ -272,7 +281,7 @@ fn crop_target(raster: &Raster, task: &Task<'_>) -> Option<transform::PixelRect>
     let total = u64::from(raster.width) * u64::from(raster.height);
     let source = task.stream.content.len() as u64;
     let saved = source * (total - kept) / total;
-    (saved > FORM_OVERHEAD).then_some(px)
+    (kept * 16 <= total * 15 && saved > FORM_OVERHEAD).then_some(px)
 }
 
 /// Replace the image object by a form that draws the cropped image into
@@ -348,20 +357,40 @@ impl Prepared {
     }
 }
 
-/// After a reduction or conversion the device space follows the raster.
-fn set_color_space(doc: &mut Document, id: ObjectId, format: Format) {
-    let name: &[u8] = match format {
-        Format::Gray1 | Format::Gray8 => b"DeviceGray",
-        Format::Rgb8 => b"DeviceRGB",
-        Format::Cmyk8 => b"DeviceCMYK",
-        Format::Indexed8 => return,
+/// After a reduction, conversion or mapping the device space follows the
+/// raster; an indexed image whose palette was mapped gets the new palette.
+fn set_color_space(doc: &mut Document, id: ObjectId, format: Format, info: &ImageInfo) {
+    let cs = match (format, &info.color) {
+        (Format::Gray1 | Format::Gray8, _) => Object::Name(b"DeviceGray".to_vec()),
+        (Format::Rgb8, _) => Object::Name(b"DeviceRGB".to_vec()),
+        (Format::Cmyk8, _) => Object::Name(b"DeviceCMYK".to_vec()),
+        (
+            Format::Indexed8,
+            classify::ColorSpace::Indexed {
+                base,
+                hival,
+                palette: Some(palette),
+            },
+        ) => {
+            let base = match base {
+                classify::ColorModel::Gray => "DeviceGray",
+                classify::ColorModel::Rgb => "DeviceRGB",
+                classify::ColorModel::Cmyk => "DeviceCMYK",
+            };
+            Object::Array(vec![
+                "Indexed".into(),
+                base.into(),
+                i64::from(*hival).into(),
+                Object::String(palette.clone(), lopdf::StringFormat::Hexadecimal),
+            ])
+        }
+        (Format::Indexed8, _) => return,
     };
     if let Ok(Object::Stream(s)) = doc.get_object_mut(id) {
-        s.dict.set("ColorSpace", Object::Name(name.to_vec()));
+        s.dict.set("ColorSpace", cs);
     }
 }
 
-/// Codecs for the raster as it is now (reduction may have changed its
 /// class since the dictionary was read).
 fn format_codecs(config: &Config, format: Format) -> Codecs {
     match format {

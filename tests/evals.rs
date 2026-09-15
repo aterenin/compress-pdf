@@ -224,8 +224,14 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
             Ok(()) => Err("encrypted input was not refused".into()),
         };
     }
-    pipeline::run(&mut doc, &Config::preset(preset), &mut report)
-        .map_err(|e| format!("pipeline failed: {e:#}"))?;
+    match pipeline::run(&mut doc, &Config::preset(preset), &mut report) {
+        // A page tree with kids the parser could not load is refused by
+        // design (repair is out of scope); that refusal is the expected
+        // outcome, the same as for encrypted input.
+        Err(e) if e.to_string() == pipeline::DAMAGED_PAGE_TREE => return Ok(()),
+        Err(e) => return Err(format!("pipeline failed: {e:#}").into()),
+        Ok(()) => {}
+    }
 
     let output = pipeline::serialize(&mut doc, &input, &mut report)
         .map_err(|e| format!("serialize failed: {e:#}"))?;

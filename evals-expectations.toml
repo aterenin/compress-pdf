@@ -63,10 +63,6 @@ file = "pdfjs-linked/issue11230.pdf"
 reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
 
 [[expect]]
-file = "pdfjs-linked/issue13783.pdf"
-reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
-
-[[expect]]
 file = "pdfjs-linked/issue9129.pdf"
 reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
 

@@ -31,6 +31,14 @@ impl Skip {
 }
 
 pub fn decode(doc: &Document, stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
+    let resolved;
+    let stream = match resolve_filters(doc, stream) {
+        Some(s) => {
+            resolved = s;
+            &resolved
+        }
+        None => stream,
+    };
     if let ColorSpace::Mapped { source, .. } = &info.color {
         return decode_mapped(doc, stream, info, source);
     }
@@ -51,6 +59,47 @@ pub fn decode(doc: &Document, stream: &Stream, info: &ImageInfo) -> Result<Raste
         }
         Some("JPXDecode") => decode_jpx(stream, info),
         Some(codec) => Err(Skip::new(format!("{codec} input not decoded yet"))),
+    }
+}
+
+/// lopdf's decoder reads `Filter` and `DecodeParms` from the stream's own
+/// dictionary and does not follow references, so a stream whose entries
+/// are indirect gets a copy with them resolved. `None` when nothing needs
+/// resolving.
+fn resolve_filters(doc: &Document, stream: &Stream) -> Option<Stream> {
+    let (filter, parms) = (
+        direct_entry(doc, &stream.dict, b"Filter"),
+        direct_entry(doc, &stream.dict, b"DecodeParms"),
+    );
+    if filter.is_none() && parms.is_none() {
+        return None;
+    }
+    let mut copy = stream.clone();
+    if let Some(f) = filter {
+        copy.dict.set("Filter", f);
+    }
+    if let Some(p) = parms {
+        copy.dict.set("DecodeParms", p);
+    }
+    Some(copy)
+}
+
+/// The entry with references replaced by their targets, or `None` when
+/// it has none.
+fn direct_entry(doc: &Document, dict: &Dictionary, key: &[u8]) -> Option<Object> {
+    let value = dict.get(key).ok()?;
+    let direct = |o: &Object| doc.dereference(o).map(|(_, o)| o.clone()).ok();
+    match value {
+        Object::Reference(_) => direct(value),
+        Object::Array(items) if items.iter().any(|o| matches!(o, Object::Reference(_))) => {
+            Some(Object::Array(
+                items
+                    .iter()
+                    .map(|o| direct(o).unwrap_or_else(|| o.clone()))
+                    .collect(),
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -545,6 +594,7 @@ mod tests {
         let cs = ColorSpace::Indexed {
             base: ColorModel::Rgb,
             hival: 3,
+            palette: None,
         };
         let r = decode(&Document::with_version("1.5"), &stream, &info(2, 1, 4, cs)).unwrap();
         assert_eq!(r.format, Format::Indexed8);
@@ -581,6 +631,7 @@ mod tests {
             ColorSpace::Indexed {
                 base: ColorModel::Rgb,
                 hival: 15,
+                palette: None,
             },
         );
         i.decode = Some(vec![15.0, 0.0]);
@@ -625,6 +676,22 @@ mod tests {
         .unwrap();
         assert_eq!(r.format, Format::Gray1);
         assert_eq!(r.data, vec![0b1010_0000, 0b0101_0000]);
+    }
+
+    #[test]
+    fn indirect_filter_is_resolved_before_decoding() {
+        let mut doc = Document::with_version("1.5");
+        let filter = doc.add_object(Object::Name(b"FlateDecode".to_vec()));
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&[10, 20, 30, 40]).unwrap();
+        let stream = Stream::new(dictionary! { "Filter" => filter }, z.finish().unwrap());
+        let r = decode(
+            &doc,
+            &stream,
+            &info(2, 2, 8, ColorSpace::Device(ColorModel::Gray)),
+        );
+        assert_eq!(r.map(|r| r.data), Ok(vec![10, 20, 30, 40]));
     }
 
     #[test]

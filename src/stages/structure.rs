@@ -12,7 +12,9 @@ mod dedupe;
 mod resources;
 
 use anyhow::Result;
-use lopdf::{Document, Object};
+use std::collections::HashSet;
+
+use lopdf::{Document, Object, ObjectId};
 
 use crate::pipeline::{Context, Stage};
 
@@ -44,6 +46,12 @@ impl Stage for CleanStructure {
         if pruned > 0 {
             tracing::debug!(count = pruned, "pruned unreferenced objects");
         }
+        let dangling = drop_dangling_references(doc);
+        if dangling > 0 {
+            ctx.report.note(format!(
+                "structure: {dangling} references to missing objects removed"
+            ));
+        }
         doc.renumber_objects();
         bump_version(doc);
         Ok(())
@@ -55,6 +63,56 @@ impl Stage for CleanStructure {
 fn bump_version(doc: &mut Document) {
     if uses_filter(doc, b"JBIG2Decode") && doc.version.as_str() < "1.4" {
         doc.version = "1.4".into();
+    }
+}
+
+/// A reference to an object that does not exist reads as absent anyway,
+/// but left in place it would be rebound to whatever object receives that
+/// number when the file is renumbered. Dictionary entries holding one are
+/// removed and array elements dropped. Returns how many were removed.
+fn drop_dangling_references(doc: &mut Document) -> usize {
+    let ids: HashSet<ObjectId> = doc.objects.keys().copied().collect();
+    let mut count = 0;
+    for obj in doc.objects.values_mut() {
+        drop_dangling_in(obj, &ids, &mut count);
+    }
+    let mut trailer = Object::Dictionary(std::mem::take(&mut doc.trailer));
+    drop_dangling_in(&mut trailer, &ids, &mut count);
+    if let Object::Dictionary(d) = trailer {
+        doc.trailer = d;
+    }
+    count
+}
+
+fn drop_dangling_in(obj: &mut Object, ids: &HashSet<ObjectId>, count: &mut usize) {
+    let dangling = |o: &Object| matches!(o, Object::Reference(r) if !ids.contains(r));
+    match obj {
+        Object::Array(items) => {
+            let before = items.len();
+            items.retain(|o| !dangling(o));
+            *count += before - items.len();
+            for item in items.iter_mut() {
+                drop_dangling_in(item, ids, count);
+            }
+        }
+        Object::Dictionary(dict) => drop_dangling_in_dict(dict, ids, count),
+        Object::Stream(stream) => drop_dangling_in_dict(&mut stream.dict, ids, count),
+        _ => {}
+    }
+}
+
+fn drop_dangling_in_dict(dict: &mut lopdf::Dictionary, ids: &HashSet<ObjectId>, count: &mut usize) {
+    let doomed: Vec<Vec<u8>> = dict
+        .iter()
+        .filter(|(_, v)| matches!(v, Object::Reference(r) if !ids.contains(r)))
+        .map(|(k, _)| k.clone())
+        .collect();
+    *count += doomed.len();
+    for key in doomed {
+        dict.remove(&key);
+    }
+    for (_, value) in dict.iter_mut() {
+        drop_dangling_in(value, ids, count);
     }
 }
 
@@ -83,6 +141,24 @@ mod tests {
         let id = doc.add_object(stream);
         doc.trailer.set("Root", id);
         doc
+    }
+
+    #[test]
+    fn dangling_references_are_dropped_before_renumbering() {
+        let mut doc = Document::with_version("1.5");
+        let missing = doc.new_object_id();
+        let holder = doc.add_object(dictionary! {
+            "Next" => missing, "Same" => 1,
+            "List" => vec![Object::Reference(missing), 2.into()],
+            "Inner" => dictionary! { "Deep" => missing },
+        });
+        doc.trailer.set("Root", holder);
+        assert_eq!(drop_dangling_references(&mut doc), 3);
+        let dict = doc.get_object(holder).unwrap().as_dict().unwrap();
+        assert!(!dict.has(b"Next"));
+        assert_eq!(dict.get(b"List").unwrap().as_array().unwrap(), &[2.into()]);
+        assert!(!dict.get(b"Inner").unwrap().as_dict().unwrap().has(b"Deep"));
+        assert_eq!(drop_dangling_references(&mut doc), 0);
     }
 
     #[test]
