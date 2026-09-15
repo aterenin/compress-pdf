@@ -225,7 +225,7 @@ fn candidates(raster: &Raster, codecs: Codecs, lossy_ok: bool, quality: u8) -> V
     }
     if codecs.contains(Codecs::JPEG)
         && lossy_ok
-        && matches!(raster.format, Format::Gray8 | Format::Rgb8)
+        && matches!(raster.format, Format::Gray8 | Format::Rgb8 | Format::Cmyk8)
     {
         out.extend(encode::jpeg(raster, quality));
     }

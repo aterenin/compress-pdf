@@ -299,18 +299,28 @@ pub fn codestream(stream: &Stream, info: &ImageInfo) -> Result<Vec<u8>, Skip> {
 // ----------------------------------------------------------------- JPEG
 
 fn decode_jpeg(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
-    let wanted = match info.color {
-        ColorSpace::Device(ColorModel::Gray) => (ZColor::Luma, Format::Gray8),
-        ColorSpace::Device(ColorModel::Rgb) => (ZColor::RGB, Format::Rgb8),
-        _ => return Err(Skip::new("JPEG in a color space other than Gray or RGB")),
+    let ColorSpace::Device(model) = info.color else {
+        return Err(Skip::new("JPEG in an unsupported color space"));
     };
     let data = codestream(stream, info)?;
     let options = DecoderOptions::new_safe()
-        .jpeg_set_out_colorspace(wanted.0)
         .set_max_width(1 << 16)
         .set_max_height(1 << 16);
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(&data), options);
-    let pixels = decoder
+    decoder
+        .decode_headers()
+        .map_err(|e| Skip::new(format!("JPEG header: {e}")))?;
+    let input = decoder
+        .input_colorspace()
+        .ok_or_else(|| Skip::new("JPEG header missing"))?;
+    let (out, format) = jpeg_output(model, input)?;
+    decoder.set_options(
+        DecoderOptions::new_safe()
+            .jpeg_set_out_colorspace(out)
+            .set_max_width(1 << 16)
+            .set_max_height(1 << 16),
+    );
+    let mut pixels = decoder
         .decode()
         .map_err(|e| Skip::new(format!("JPEG does not decode: {e}")))?;
     let (w, h) = decoder
@@ -320,9 +330,38 @@ fn decode_jpeg(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
     if (w, h) != (info.width, info.height) {
         return Err(Skip::new("JPEG size differs from the dictionary"));
     }
-    let raster = Raster::new(w, h, wanted.1, pixels)
-        .ok_or_else(|| Skip::new("JPEG sample count mismatch"))?;
+    if out == ZColor::YCCK {
+        ycck_to_cmyk(&mut pixels);
+    }
+    let raster =
+        Raster::new(w, h, format, pixels).ok_or_else(|| Skip::new("JPEG sample count mismatch"))?;
     apply_decode(raster, info)
+}
+
+/// Output color space to request from the decoder and the raster format
+/// it yields, given the dictionary's model and the codestream's own.
+fn jpeg_output(model: ColorModel, input: ZColor) -> Result<(ZColor, Format), Skip> {
+    match (model, input) {
+        (ColorModel::Gray, _) => Ok((ZColor::Luma, Format::Gray8)),
+        (ColorModel::Rgb, ZColor::CMYK | ZColor::YCCK) => {
+            Err(Skip::new("four-component JPEG in an RGB color space"))
+        }
+        (ColorModel::Rgb, _) => Ok((ZColor::RGB, Format::Rgb8)),
+        (ColorModel::Cmyk, ZColor::CMYK) => Ok((ZColor::CMYK, Format::Cmyk8)),
+        (ColorModel::Cmyk, ZColor::YCCK) => Ok((ZColor::YCCK, Format::Cmyk8)),
+        (ColorModel::Cmyk, _) => Err(Skip::new("JPEG channels differ from the CMYK color space")),
+    }
+}
+
+/// The YCCK to CMYK conversion PDF readers apply (pdf.js, hayro); the
+/// inversion of the color channels is part of the constants.
+fn ycck_to_cmyk(pixels: &mut [u8]) {
+    for c in pixels.as_chunks_mut::<4>().0 {
+        let (y, cb, cr) = (f32::from(c[0]), f32::from(c[1]), f32::from(c[2]));
+        c[0] = (434.456 - y - 1.402 * cr).clamp(0.0, 255.0) as u8;
+        c[1] = (119.541 - y + 0.344 * cb + 0.714 * cr).clamp(0.0, 255.0) as u8;
+        c[2] = (481.816 - y - 1.772 * cb).clamp(0.0, 255.0) as u8;
+    }
 }
 
 #[cfg(test)]

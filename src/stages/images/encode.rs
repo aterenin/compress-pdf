@@ -142,13 +142,16 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
 
 // ----------------------------------------------------------------- JPEG
 
-/// JPEG through mozjpeg at `quality` (1-100). Gray and RGB only; the
+/// JPEG through mozjpeg at `quality` (1-100). Gray, RGB and CMYK; the
 /// encoder's defaults (progressive, trellis quantization, 4:2:0 chroma)
 /// stand until the evals say otherwise.
 pub fn jpeg(raster: &Raster, quality: u8) -> Option<Encoded> {
     let color_space = match raster.format {
         Format::Gray8 => mozjpeg::ColorSpace::JCS_GRAYSCALE,
         Format::Rgb8 => mozjpeg::ColorSpace::JCS_RGB,
+        // Stored as-is with an Adobe marker; PDF readers take CMYK JPEG
+        // samples directly (no inversion), as the decoder side does.
+        Format::Cmyk8 => mozjpeg::ColorSpace::JCS_CMYK,
         _ => return None,
     };
     let bytes = std::panic::catch_unwind(|| -> std::io::Result<Vec<u8>> {
@@ -268,7 +271,8 @@ mod tests {
             let enc = jpeg(&r, 75).unwrap();
             assert!(enc.bytes.starts_with(&[0xFF, 0xD8]), "SOI marker");
         }
-        assert!(jpeg(&Raster::new(1, 1, Format::Cmyk8, vec![0; 4]).unwrap(), 75).is_none());
+        assert!(jpeg(&Raster::new(1, 1, Format::Cmyk8, vec![0; 4]).unwrap(), 75).is_some());
+        assert!(jpeg(&Raster::new(8, 1, Format::Gray1, vec![0]).unwrap(), 75).is_none());
     }
 
     #[test]
