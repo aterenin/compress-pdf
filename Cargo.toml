@@ -35,11 +35,14 @@ mozjpeg = "0.10"            # JPEG encode (C, via bindings)
 zune-core = "0.5"           # colorspace and option types shared with zune-jpeg
 zune-jpeg = "0.5"           # JPEG decode
 
+fax = "0.3"                 # CCITT G4 encode
+jbig2enc-rust = "0.5"       # JBIG2 symbol-mode encode with shared globals
+hayro-ccitt = "0.3"         # CCITT input decode (same crate hayro-syntax uses)
+hayro-jbig2 = "0.3"         # JBIG2 input decode (same crate hayro-syntax uses)
+
 # Planned, added when the owning piece is implemented (see CLAUDE.md):
-# fax = "0.3"                 # CCITT G4 encode
-# jbig2enc-rust = "0.5"       # JBIG2 symbol-mode encode with shared globals
 # moxcms = "0.9"              # ICC color conversion
-# hayro-jbig2 / hayro-ccitt / hayro-jpeg2000  # input decoders (already built via hayro-syntax)
+# hayro-jpeg2000              # JPX input decode (already built via hayro-syntax)
 
 # Used only by examples/ (the `cargo evals` tool) and tests.
 [dev-dependencies]

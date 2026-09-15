@@ -15,11 +15,11 @@
 //! Invariant: an image never gets larger, and an image we cannot fully
 //! understand is left byte-for-byte untouched.
 
+mod bitonal;
 mod classify;
 mod decode;
 mod encode;
 mod raster;
-mod rewrite;
 mod transform;
 
 use std::collections::HashSet;
@@ -158,7 +158,7 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
         config,
         dpi,
     } = task;
-    let raster = match decode::decode(stream, &info) {
+    let raster = match decode::decode(doc, stream, &info) {
         Ok(r) => r,
         Err(Skip(reason)) => return Outcome::kept(reason),
     };
@@ -216,6 +216,12 @@ fn candidates(raster: &Raster, codecs: Codecs, lossy_ok: bool, quality: u8) -> V
     let mut out = Vec::new();
     if codecs.contains(Codecs::FLATE) {
         out.extend(encode::flate(raster));
+    }
+    if codecs.contains(Codecs::G4) {
+        out.extend(bitonal::encode_g4(raster));
+    }
+    if codecs.contains(Codecs::JBIG2) {
+        out.extend(bitonal::encode_jbig2(raster));
     }
     if codecs.contains(Codecs::JPEG)
         && lossy_ok
@@ -286,7 +292,7 @@ fn class_dpi(config: &Config, class: Class) -> Dpi {
 
 fn write_back(doc: &mut Document, id: ObjectId, raster: &Raster, best: &Encoded) {
     if let Ok(Object::Stream(s)) = doc.get_object_mut(id) {
-        rewrite::apply(s, raster, best);
+        encode::apply(s, raster, best);
     }
 }
 
@@ -307,7 +313,7 @@ fn resize_soft_mask(doc: &mut Document, parent: &Stream, width: u32, height: u32
     };
     let mask = mask.clone();
     let small = classify::read_info(doc, &mask.dict)
-        .and_then(|info| decode::decode(&mask, &info).ok())
+        .and_then(|info| decode::decode(doc, &mask, &info).ok())
         .and_then(|raster| transform::downsample(&raster, width, height));
     let Some(small) = small else {
         return false;

@@ -66,7 +66,7 @@ through Rust bindings.
 | Image clipping | Crop an image to the bounding box, in image space, of the union of the clip regions in effect at each of its placements, so pixels that can never be visible are discarded before re-encoding. Pixels inside the box but outside a non-rectangular path are kept. Pre-blended images (`/Matte`) are not clipped. Clipping implies resource optimization, since the cropped image is a new object. | every image with a clip narrower than its placement | own; clip tracking is part of the placement analysis |
 | Lossy re-encoding | Re-encode continuous-tone images as JPEG at a preset quality. | gray and color images | `mozjpeg` (C) |
 | Lossless re-encoding | Re-encode with Flate, choosing the PNG predictor per image. | any image, indexed images especially | `flate2` (Rust, miniz_oxide backend) |
-| Bitonal encoding | Encode 1-bit images with CCITT G4 or JBIG2 symbol mode, one JBIG2 globals stream shared per document. | bitonal images and stencil masks | `fax` (Rust), `jbig2enc-rust` (Rust) |
+| Bitonal encoding | Encode 1-bit images with CCITT G4 or JBIG2. JBIG2 output is generic-region coding (lossless) today; symbol mode with one shared globals stream per document is planned once a lossless symbol encoder is available. | bitonal images and stencil masks | `fax` (Rust), `jbig2enc-rust` (Rust) |
 | Best-of selection | Encode with every codec allowed for the image's class plus the original bytes; keep the smallest. Images never grow. | every image touched | own |
 | Color complexity reduction | RGB or CMYK with all channels equal becomes gray; two-level gray becomes bitonal; flat images become 1x1; opaque soft masks are removed; two-level soft masks become stencil masks. | images with device color spaces, and indexed images with a device base | own, on raster buffers |
 | Color conversion | Convert images to RGB through ICC profiles: the image's embedded ICCBased profile when present; otherwise synthesized defaults, sRGB for RGB and gray, and for CMYK a LUT profile generated from the Neugebauer model with the published default coefficients. No third-party profile is bundled. | color images, when a preset asks | `moxcms` (Rust); own Neugebauer LUT generator |
@@ -196,8 +196,7 @@ when present as an extra cross-check, never the binary.
   16-primary coefficient table that lives in the code. Target: synthesized
   sRGB. Lab and Cal* spaces convert through their defined transforms to the
   target. No ICC file is bundled or loaded from disk.
-- Bitonal candidates: G4 (`fax` crate) and JBIG2 (`jbig2enc-rust`, symbol mode
-  with one shared globals stream per document). Continuous: JPEG (`mozjpeg`)
+- Bitonal candidates: G4 (`fax` crate) and JBIG2 (`jbig2enc-rust`, generic region, lossless). Continuous: JPEG (`mozjpeg`)
   and Flate with predictor selection. Indexed: Flate.
 
 ### Strip flag mapping
@@ -384,8 +383,10 @@ Fixed for v1 and expected to be revisited against evals results.
   content-stream walk.
 - Flate predictor selection: try each PNG predictor per image and keep the
   smallest.
-- JBIG2 mode: lossless symbol mode with refinement, falling back to generic
-  region when no symbols are found. Lossy symbol matching is never used.
+- JBIG2 mode: generic-region coding, lossless. The available encoder's symbol
+  mode substitutes glyphs (lossy) and has no refinement, so it is not used.
+  Revisit when a lossless symbol mode exists or the evals show generic
+  coding far behind the reference outputs on scanned text.
 - Content stream rebuild: re-serialize each content stream from its parsed
   operator list, which normalizes formatting and makes resource references
   exact; nothing else is changed.
@@ -411,7 +412,7 @@ verification blocks the resulting content loss. Stages:
 | Stage | Status | Done when |
 |---|---|---|
 | usage | done: CTM and bounding-box clip walk over page content, form XObjects (with `/Matrix` and `/BBox`), tiling patterns, and annotation appearance streams; `ImageUsage` holds pixels, placements with rendered size and visible fraction, `min_dpi()` and `crop_box()`; tested for two placements, rectangular clip, `Q` restoring the clip, form matrices, and undrawn images | |
-| images | first milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with identity or inverting `Decode`; decode DCT (Gray, RGB) including Flate-wrapped JPEGs; downsample per class rule (Lanczos3, nearest for indices, gray-then-threshold for bitonal); encode Flate with per-row PNG predictor choice and JPEG via mozjpeg; unwrapped-JPEG passthrough candidate; best-of with never-grow; soft masks resized with their parent; per-image report rows | Remaining, in order: CCITT and JBIG2 input decoding and G4/JBIG2 output; JPX input; CMYK JPEG (Adobe inversion) and CMYK JPEG output; color conversion (moxcms, Neugebauer LUT); color complexity reduction; clipping via a wrapping form XObject; stencil `/Mask` resampling; Separation/DeviceN/Lab; 16-bit and non-trivial `Decode` arrays. |
+| images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with identity or inverting `Decode`; decode DCT (Gray, RGB) including Flate-wrapped JPEGs; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`) and embedded JBIG2 with globals via hayro's decoders; downsample per class rule (Lanczos3, nearest for indices, gray-then-threshold for bitonal); encode Flate with per-row PNG predictor choice, JPEG via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; best-of with never-grow; soft masks resized with their parent; per-image report rows | Remaining, in order: JPX input; CMYK JPEG (Adobe inversion) and CMYK JPEG output; color conversion (moxcms, Neugebauer LUT); color complexity reduction; clipping via a wrapping form XObject; stencil `/Mask` resampling; Separation/DeviceN/Lab; non-trivial `Decode` arrays; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
 | fonts | stub | Unembed standard 14, Type 1 to CFF, merge, subset, in that order. |
 | strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
 | structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners that do not decode, inherited resources, and Type 3 fonts without resources are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |

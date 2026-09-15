@@ -6,12 +6,13 @@
 //! DCT via zune-jpeg for Gray and RGB. Everything else returns `Skip` with
 //! the reason, and the caller keeps the image untouched.
 
-use lopdf::Stream;
+use lopdf::{Dictionary, Document, Object, Stream};
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace as ZColor;
 use zune_core::options::DecoderOptions;
 use zune_jpeg::JpegDecoder;
 
+use super::bitonal;
 use super::classify::{ColorModel, ColorSpace, ImageInfo};
 use super::raster::{Format, Raster};
 
@@ -27,12 +28,51 @@ impl Skip {
     }
 }
 
-pub fn decode(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
+pub fn decode(doc: &Document, stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
     match info.image_codec() {
         None => decode_samples(stream, info),
         Some("DCTDecode") => decode_jpeg(stream, info),
+        Some("CCITTFaxDecode") => {
+            let data = codestream(stream, info)?;
+            let parms = codec_parms(doc, stream, info);
+            let raster = bitonal::decode_ccitt(&data, parms.as_ref(), info.width, info.height)?;
+            apply_decode(raster, info)
+        }
+        Some("JBIG2Decode") => {
+            let data = codestream(stream, info)?;
+            let globals = jbig2_globals(doc, codec_parms(doc, stream, info).as_ref());
+            let raster = bitonal::decode_jbig2(&data, globals.as_deref(), info.width, info.height)?;
+            apply_decode(raster, info)
+        }
         Some(codec) => Err(Skip::new(format!("{codec} input not decoded yet"))),
     }
+}
+
+/// The `DecodeParms` entry that belongs to the image codec (the last
+/// filter): the single dictionary, or the last array element. Either may
+/// be an indirect reference.
+fn codec_parms(doc: &Document, stream: &Stream, info: &ImageInfo) -> Option<Dictionary> {
+    let parms = stream
+        .dict
+        .get(b"DecodeParms")
+        .or_else(|_| stream.dict.get(b"DP"))
+        .ok()?;
+    let parms = doc.dereference(parms).map(|(_, o)| o).unwrap_or(parms);
+    let entry = match parms {
+        Object::Dictionary(_) if info.filters.len() == 1 => parms,
+        Object::Array(items) => items.get(info.filters.len() - 1)?,
+        _ => return None,
+    };
+    let entry = doc.dereference(entry).map(|(_, o)| o).unwrap_or(entry);
+    entry.as_dict().ok().cloned()
+}
+
+fn jbig2_globals(doc: &Document, parms: Option<&Dictionary>) -> Option<Vec<u8>> {
+    let id = parms?.get(b"JBIG2Globals").ok()?.as_reference().ok()?;
+    let Ok(Object::Stream(s)) = doc.get_object(id) else {
+        return None;
+    };
+    s.decompressed_content_with_limit(MAX_DECODED_BYTES).ok()
 }
 
 // -------------------------------------------------------------- samples
@@ -269,6 +309,7 @@ mod tests {
         // Two pixels per byte: 0x0 and 0xF.
         let stream = Stream::new(dictionary! {}, vec![0x0F, 0xF0]);
         let r = decode(
+            &Document::with_version("1.5"),
             &stream,
             &info(2, 2, 4, ColorSpace::Device(ColorModel::Gray)),
         )
@@ -281,6 +322,7 @@ mod tests {
     fn sixteen_bit_rgb_keeps_the_high_byte() {
         let stream = Stream::new(dictionary! {}, vec![0x12, 0x34, 0xAB, 0xCD, 0xFF, 0x00]);
         let r = decode(
+            &Document::with_version("1.5"),
             &stream,
             &info(1, 1, 16, ColorSpace::Device(ColorModel::Rgb)),
         )
@@ -295,7 +337,7 @@ mod tests {
             base: ColorModel::Rgb,
             hival: 3,
         };
-        let r = decode(&stream, &info(2, 1, 4, cs)).unwrap();
+        let r = decode(&Document::with_version("1.5"), &stream, &info(2, 1, 4, cs)).unwrap();
         assert_eq!(r.format, Format::Indexed8);
         assert_eq!(r.data, vec![1, 2]);
     }
@@ -305,15 +347,21 @@ mod tests {
         let stream = Stream::new(dictionary! {}, vec![0, 255]);
         let mut i = info(2, 1, 8, ColorSpace::Device(ColorModel::Gray));
         i.decode = Some(vec![1.0, 0.0]);
-        assert_eq!(decode(&stream, &i).unwrap().data, vec![255, 0]);
+        assert_eq!(
+            decode(&Document::with_version("1.5"), &stream, &i)
+                .unwrap()
+                .data,
+            vec![255, 0]
+        );
         i.decode = Some(vec![0.2, 0.8]);
-        assert!(decode(&stream, &i).is_err());
+        assert!(decode(&Document::with_version("1.5"), &stream, &i).is_err());
     }
 
     #[test]
     fn bitonal_is_kept_packed() {
         let stream = Stream::new(dictionary! {}, vec![0b1010_0000, 0b0101_0000]);
         let r = decode(
+            &Document::with_version("1.5"),
             &stream,
             &info(4, 2, 1, ColorSpace::Device(ColorModel::Gray)),
         )
@@ -325,6 +373,13 @@ mod tests {
     #[test]
     fn short_data_is_skipped() {
         let stream = Stream::new(dictionary! {}, vec![0; 5]);
-        assert!(decode(&stream, &info(2, 2, 8, ColorSpace::Device(ColorModel::Rgb))).is_err());
+        assert!(
+            decode(
+                &Document::with_version("1.5"),
+                &stream,
+                &info(2, 2, 8, ColorSpace::Device(ColorModel::Rgb))
+            )
+            .is_err()
+        );
     }
 }
