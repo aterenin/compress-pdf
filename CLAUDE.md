@@ -137,7 +137,7 @@ behind.
 | images | `stages/images.rs` | image XObjects, `Context.usage` | image streams and dictionaries | Classify, decode to raster, transform (clip to crop box, color conversion, color-complexity reduction, downsampling), encode with every allowed codec plus the original bytes, keep the smallest, rewrite the stream keeping SMask/Mask consistent. Split into `images/{classify,decode,transform,encode,rewrite}.rs` when it grows. |
 | fonts | `stages/fonts.rs` | font dictionaries, content streams | font programs and dictionaries | Unembed the 14 standard fonts when the font's Unicode mapping is trustworthy; convert Type 1 programs to CFF; merge duplicate embeddings of the same font; subset embedded TrueType/CFF programs to the glyphs referenced by content streams. In that order, so subsetting runs once on the merged result. |
 | strip | `stages/strip.rs` | catalog, pages, XObjects | dictionary entries only | Remove the parts selected by `Strip` flags: threads, metadata streams, piece info, structure tree, thumbnails, spider info, alternate images, output intents. Removed objects become unreferenced and are collected by `structure`. |
-| structure | `stages/structure.rs` | whole object map | whole object map | Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, pack non-stream objects into object streams, raise the header version to the minimum the output needs (1.4 for JBIG2, 1.5 for object streams). lopdf's `save_modern` writes the xref stream but does not pack object streams, so packing is our code. |
+| structure | `stages/structure.rs` | whole object map | whole object map | Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, raise the header version to the minimum the output needs (1.4 for JBIG2; lopdf raises to 1.5 itself when it writes object streams). Object streams and the xref stream are written by lopdf's `save_with_options`, configured in `pipeline::serialize` for maximum packing (level 9, up to 5,000 objects per stream). |
 
 ### Output verification
 
@@ -356,8 +356,9 @@ PDF/A conformance preservation.
 
 - `lopdf` vs `qpdf` bindings. Starting with lopdf: pure Rust, no C++ build
   step, direct access to the object map. Known limits from the full-corpus
-  run: it does not pack object streams (so files that used them grow until
-  our packer exists); it loads some damaged-xref files into a broken graph
+  run: its writer is a few percent less compact than good producers even
+  with object streams packed at level 9 (the file-level never-grow rule
+  absorbs this); it loads some damaged-xref files into a broken graph
   without error; it cannot load 11 of 4,368 corpus files and hangs on one.
   Revisit if repair of damaged files becomes a goal; the `Stage` trait would
   not change.
@@ -413,7 +414,7 @@ verification blocks the resulting content loss. Stages:
 | images | stub | Classify, decode, transform, best-of encode, rewrite, per the design. Decoding coverage lands in this order: raw/Flate samples in device, ICCBased and Indexed spaces, then DCT, then CCITT and JBIG2 inputs, then JPX, then Separation/DeviceN/Lab/Cal*. Per-image report rows populated. |
 | fonts | stub | Unembed standard 14, Type 1 to CFF, merge, subset, in that order. |
 | strip | stub | Every `Strip` flag removes the keys in the mapping table. |
-| structure | minimal: compress, prune, renumber | Hash dedupe of identical streams and dictionaries; unused `/Resources` entries dropped; content streams re-serialized; version bump. |
+| structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners that do not decode, inherited resources, and Type 3 fonts without resources are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
 
 Planned implementation order: structure, strip, usage, images, fonts. This
 differs from pipeline order on purpose: structure and strip are cheap and

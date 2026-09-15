@@ -101,8 +101,17 @@ fn serialized_len(doc: &mut Document) -> Result<usize> {
 /// strictly smaller than the input, the input bytes are returned unchanged
 /// and the report says so.
 pub fn serialize(doc: &mut Document, input: &[u8], report: &mut Report) -> Result<Vec<u8>> {
+    // Object streams and an xref stream, packed as tightly as lopdf allows:
+    // its defaults (100 objects per stream, level 6) leave a few percent on
+    // the table against what good producers emit.
+    let options = lopdf::SaveOptions::builder()
+        .use_object_streams(true)
+        .use_xref_streams(true)
+        .max_objects_per_stream(5000)
+        .compression_level(9)
+        .build();
     let mut modern = Vec::new();
-    doc.save_modern(&mut modern)
+    doc.save_with_options(&mut modern, options)
         .context("serializing (xref stream)")?;
     let mut classic = Vec::new();
     doc.save_to(&mut classic)
