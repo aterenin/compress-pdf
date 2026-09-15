@@ -43,6 +43,9 @@ hayro-jbig2 = "0.3"         # JBIG2 input decode (same crate hayro-syntax uses)
 hayro-jpeg2000 = "0.3"      # JPX input decode (same crate hayro-syntax uses)
 
 moxcms = "0.9"              # ICC color conversion
+# Font stage.
+hb-subset = { version = "0.3", features = ["bundled"] }  # HarfBuzz subsetting (C++, glyph IDs retained)
+read-fonts = "0.44"         # cmap, post, CFF charset and encoding lookups
 
 # Used only by examples/ (the `cargo evals` tool) and tests.
 [dev-dependencies]

@@ -12,6 +12,9 @@ overridden from the command line.
 ## Toolchain
 
 `cargo` lives in `~/.cargo/bin`, which is not on PATH in non-interactive shells.
+Building needs a C compiler for mozjpeg and a C++ compiler plus libclang
+(bindgen) for the bundled HarfBuzz; on macOS the Xcode command line tools
+provide all three.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -71,7 +74,7 @@ through Rust bindings.
 | Best-of selection | Encode with every codec allowed for the image's class plus the original bytes; keep the smallest. Images never grow. | every image touched | own | [x] |
 | Color complexity reduction | RGB or CMYK with all channels equal becomes gray; two-level gray becomes bitonal; flat images become 1x1; opaque soft masks are removed; two-level soft masks become stencil masks. | images with device color spaces, and indexed images with a device base | own, on raster buffers | [x] |
 | Color conversion | Convert images to RGB through ICC profiles: the image's embedded ICCBased profile when present; otherwise synthesized defaults, sRGB for RGB and gray, and for CMYK a LUT profile generated from the Neugebauer model with the published default coefficients. No third-party profile is bundled. | color images, when a preset asks | `moxcms` (Rust); own Neugebauer LUT generator | [x] |
-| Font subsetting | Reduce embedded TrueType and CFF programs to the glyphs actually used. Glyph IDs are retained, so nothing that refers to a glyph (content streams, CMaps, CIDToGIDMap, cmap) needs to change. | embedded fonts | own (see open decisions) | [ ] |
+| Font subsetting | Reduce embedded TrueType, CFF and OpenType programs to the glyphs the content streams use. Glyph IDs are retained, so nothing that refers to a glyph (content strings, CMaps, `CIDToGIDMap`, the font's `cmap`) changes; unused glyphs keep their ID and lose their outline. Hinting and layout tables are dropped. Which glyphs a simple font's codes reach is computed as the union over every rule a viewer may apply (symbol, Macintosh and Unicode `cmap` subtables, `post` and CFF glyph names, built-in encodings). | embedded TrueType, CFF, OpenType; Type 1 after conversion | `hb-subset` (HarfBuzz, C++, bundled) for the subsetting; `read-fonts` (Rust) to read `cmap`, `post` and CFF charsets and encodings; own code for the PDF side (encodings, embedded CMaps, the OpenType wrapper HarfBuzz needs around bare CFF) | [x] |
 | Font merging | Merge embedded font programs that originate from the same font (same type, name, and encoding) into one, repointing every font dictionary that used them. | duplicate TrueType and Type 1 embeddings | own, over the font parsers | [ ] |
 | Type 1 to CFF conversion | Convert embedded Type 1 (`/FontFile`) programs to CFF (`/FontFile3`), which is more compact. | Type 1 fonts | `hayro-font` (Rust) to parse Type 1 charstrings; own CFF v1 writer (see open decisions) | [ ] |
 | Standard-font unembedding | Drop the program of an embedded standard-14 font when its Unicode mapping is clean, so viewers substitute. | Helvetica, Times, Courier, Symbol, ZapfDingbats families | own | [ ] |
@@ -139,7 +142,7 @@ behind.
 |---|---|---|---|---|---|
 | usage | `stages/usage.rs` | page, form XObject, pattern, and annotation appearance content streams | `Context.usage` | Walk each content stream tracking the CTM and the current clip through `q`/`Q`/`cm`/`W n`/`re` and form `/Matrix` and `/BBox`; at every image `Do` record the rendered size in points and the clip region in image space. `ImageUsage` holds, per image object, its pixel size and all placements; effective DPI is the minimum over placements on the tighter axis; the crop box is the union of placement clips. The same walk records, per font, the strings shown with it (`Tj`, `TJ`, `'`, `"`), with `Tf` tracked as part of the saved graphics state. Images and fonts reached only through paths the walker does not follow get no entry. Does not mutate the document. | [x] |
 | images | `stages/images.rs` | image XObjects, `Context.usage` | image streams and dictionaries | Classify, decode to raster, transform (clip to crop box, color conversion, color-complexity reduction, downsampling), encode with every allowed codec plus the original bytes, keep the smallest, rewrite the stream keeping SMask/Mask consistent. Split into `images/{classify,decode,transform,encode,bitonal,function}.rs`: dictionary reading and color-space mapping, decoding, raster type and transforms, output codecs, bitonal codecs, PDF functions with the type 4 calculator. | [~] |
-| fonts | `stages/fonts.rs` | font dictionaries, content streams | font programs and dictionaries | Unembed the 14 standard fonts when the font's Unicode mapping is trustworthy; convert Type 1 programs to CFF; merge duplicate embeddings of the same font; subset embedded TrueType/CFF programs to the glyphs referenced by content streams. In that order, so subsetting runs once on the merged result. | [ ] |
+| fonts | `stages/fonts.rs` | font dictionaries, content streams | font programs and dictionaries | Unembed the 14 standard fonts when the font's Unicode mapping is trustworthy; convert Type 1 programs to CFF; merge duplicate embeddings of the same font; subset embedded TrueType/CFF programs to the glyphs referenced by content streams. In that order, so subsetting runs once on the merged result. | [~] |
 | strip | `stages/strip.rs` | catalog, pages, XObjects | dictionary entries only | Remove the parts selected by `Strip` flags: threads, metadata streams, piece info, structure tree, thumbnails, spider info, alternate images, output intents. Removed objects become unreferenced and are collected by `structure`. | [x] |
 | structure | `stages/structure.rs` | whole object map | whole object map | Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, raise the header version to the minimum the output needs (1.4 for JBIG2; lopdf raises to 1.5 itself when it writes object streams). Object streams and the xref stream are written by lopdf's `save_with_options`, configured in `pipeline::serialize` for maximum packing (level 9, up to 5,000 objects per stream). | [~] |
 
@@ -370,21 +373,15 @@ PDF/A conformance preservation.
   decoded all 51 JPX-bearing corpus files without regressions. With this the
   only C dependency is mozjpeg. Revisit if a corpus file exposes a codestream
   feature it lacks; OpenJPEG through bindings is the fallback.
-- Font subsetting library: none of the published Rust subsetters fits an
-  existing PDF. `fontcull` selects by character through the font's cmap
-  rather than by glyph ID; `subsetter` (Typst) renumbers glyphs, drops the
-  cmap and requires the font to be rewritten as a CID font; the `klippa`
-  crate on crates.io is an unrelated rectangle-clipping library (the
-  fontations subsetter of that name is unpublished). Subsetting an
-  embedded font in place needs retained glyph IDs, which means an own
-  subsetter: for TrueType, rewrite `glyf`/`loca` with empty outlines for
-  unused glyphs (keeping composite components) and drop hinting tables;
-  for CFF, rewrite the CharStrings INDEX with empty charstrings for unused
-  glyphs on top of the CFF writer the Type 1 conversion needs anyway. The
-  alternative is HarfBuzz's subsetter through the `hb-subset` bindings
-  (C++, supports retained glyph IDs); it is the most mature subsetter
-  there is and would be the second C dependency. Own is the working
-  assumption; to be confirmed.
+- Font subsetting library: HarfBuzz through `hb-subset` (bundled, so a
+  C++ compiler and libclang are needed to build). Decided after finding
+  that none of the published Rust subsetters fits an existing PDF:
+  `fontcull` selects by character through the font's cmap rather than by
+  glyph ID; `subsetter` (Typst) renumbers glyphs, drops the cmap and
+  requires the font to be rewritten as a CID font; the `klippa` crate on
+  crates.io is an unrelated rectangle-clipping library. HarfBuzz retains
+  glyph IDs and is the most exercised subsetter there is; with it and
+  mozjpeg the crate has two C/C++ dependencies.
 - CFF writing: `write-fonts` 0.53 ships `ps::cff::v2` with only `Cff2Header`
   and `Index` (CFF2 container primitives); its generated CFF v1 types are not
   compiled into the crate, and neither version has dict or charstring
@@ -438,7 +435,7 @@ verification blocks the resulting content loss. Stages:
 |---|---|---|
 | usage | done: CTM and bounding-box clip walk over page content, form XObjects (with `/Matrix` and `/BBox`), tiling patterns, and annotation appearance streams; `ImageUsage` holds pixels, placements with rendered size and visible fraction, `min_dpi()` and `crop_box()`; tested for two placements, rectangular clip, `Q` restoring the clip, form matrices, and undrawn images | |
 | images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels skipped) via hayro's decoders; downsample per class rule (Lanczos3, nearest for indices, gray-then-threshold for bitonal); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
-| fonts | first milestone: every embedded program gets a report row; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Type 1 to CFF, merge, subset, in that order. |
+| fonts | second milestone: every embedded program gets a report row; subsetting of TrueType, CFF, CIDFontType0C and OpenType programs with glyph IDs retained (HarfBuzz), driven by the strings the usage walk recorded, with the union of glyphs over every font dictionary sharing a program; programs used by AcroForm default resources or Type 3 fonts, or by fonts the walk never saw, are left alone; the program stream is rewritten Flate-compressed under the never-grow rule and untagged fonts get a subset tag derived from the glyph set; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Type 1 to CFF (which then subsets like any CFF), merge. Refine the AcroForm rule: only fonts named by a field's default appearance string need to be untouchable. |
 | strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
 | structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners that do not decode, inherited resources, and Type 3 fonts without resources are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
 
