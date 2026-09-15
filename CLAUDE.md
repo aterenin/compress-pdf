@@ -413,7 +413,7 @@ verification blocks the resulting content loss. Stages:
 | usage | stub (data model and `min_dpi` exist and are tested; no content-stream walk, no clip tracking) | CTM and clip walk over page, form, pattern, and appearance content streams fills `ImageUsage`. Unit tests: one image placed twice at different scales; one image under a rectangular clip. |
 | images | stub | Classify, decode, transform, best-of encode, rewrite, per the design. Decoding coverage lands in this order: raw/Flate samples in device, ICCBased and Indexed spaces, then DCT, then CCITT and JBIG2 inputs, then JPX, then Separation/DeviceN/Lab/Cal*. Per-image report rows populated. |
 | fonts | stub | Unembed standard 14, Type 1 to CFF, merge, subset, in that order. |
-| strip | stub | Every `Strip` flag removes the keys in the mapping table. |
+| strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
 | structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners that do not decode, inherited resources, and Type 3 fonts without resources are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
 
 Planned implementation order: structure, strip, usage, images, fonts. This
