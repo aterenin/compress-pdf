@@ -1,0 +1,103 @@
+# Known failures in the corpus evals (`cargo test --test evals`).
+#
+# Each entry marks one file (optionally for one preset) as an expected
+# failure; the harness registers it as ignored so the suite stays green.
+# This file is the backlog: every entry should say why, and entries are
+# removed when the underlying limitation is fixed.
+#
+# [[expect]]
+# file = "pdfjs/test/pdfs/example.pdf"   # relative to evals/corpus/
+# preset = "standard"                    # optional; omit to cover all presets
+# reason = "encrypted input is out of scope for v1"
+
+[[expect]]
+file = "pdfjs-linked/issue14269.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs-linked/issue15833.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs-linked/issue19510.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs-linked/issue7308.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/PDFBOX-3148-2-fuzzed.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/REDHAT-1531897-0.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/bug1250079.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/bug1606566.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/bug1980958.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue18986.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue9105_other.pdf"
+reason = "lopdf cannot load the input (corrupt or fuzzed file); repair is out of scope for v1"
+
+[[expect]]
+file = "pdfjs-linked/ibwa-bad.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "pdfjs-linked/issue11230.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "pdfjs-linked/issue13783.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "pdfjs-linked/issue9129.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "pdfjs-linked/issue9552.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue17147.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "py-pdf/017-unreadable-meta-data/unreadablemetadata.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "verapdf/PDF_A-1b/6.1 File structure/6.1.4 Cross reference table/veraPDF test suite 6-1-4-t01-fail-a.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "verapdf/PDF_A-1b/6.1 File structure/6.1.4 Cross reference table/veraPDF test suite 6-1-4-t01-fail-b.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "verapdf/PDF_A-1b/6.1 File structure/6.1.4 Cross reference table/veraPDF test suite 6-1-4-t02-fail-b.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "verapdf/PDF_A-2b/6.1 File structure/6.1.4 Cross reference table/veraPDF test suite 6-1-4-t01-fail-b.pdf"
+reason = "lopdf loads a damaged xref into a broken object graph and the output does not re-parse; to be caught by the verify step"
+
+[[expect]]
+file = "pdfjs-linked/pdf.pdf"
+reason = "lopdf never finishes loading this file (hangs, multi-GB memory)"

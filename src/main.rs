@@ -1,8 +1,4 @@
 mod cli;
-mod config;
-mod pipeline;
-mod report;
-mod stages;
 
 use std::fs;
 
@@ -11,8 +7,9 @@ use clap::Parser;
 use lopdf::Document;
 use tracing_subscriber::EnvFilter;
 
+use compress_pdf::{pipeline, report::Report};
+
 use crate::cli::Cli;
-use crate::report::Report;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -22,18 +19,13 @@ fn main() -> Result<()> {
     let output = cli.output_path();
     tracing::debug!(?config, "effective configuration");
 
-    let input_bytes = fs::metadata(&cli.input)
-        .with_context(|| format!("reading {}", cli.input.display()))?
-        .len() as usize;
+    let input = fs::read(&cli.input).with_context(|| format!("reading {}", cli.input.display()))?;
     let mut doc =
-        Document::load(&cli.input).with_context(|| format!("parsing {}", cli.input.display()))?;
+        Document::load_mem(&input).with_context(|| format!("parsing {}", cli.input.display()))?;
 
-    let mut report = Report::new(input_bytes);
+    let mut report = Report::new(input.len());
     pipeline::run(&mut doc, &config, &mut report)?;
-
-    let mut buf = Vec::with_capacity(input_bytes);
-    doc.save_modern(&mut buf).context("serializing output")?;
-    report.output_bytes = buf.len();
+    let buf = pipeline::serialize(&mut doc, &input, &mut report)?;
 
     if cli.dry_run {
         print!("{report}");

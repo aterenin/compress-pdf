@@ -87,3 +87,33 @@ fn serialized_len(doc: &mut Document) -> Result<usize> {
         .context("measuring document size")?;
     Ok(buf.len())
 }
+
+/// Final bytes for the output file, honoring the never-grow rule at file
+/// level: the smaller of lopdf's two writers is used, and if neither is
+/// strictly smaller than the input, the input bytes are returned unchanged
+/// and the report says so.
+pub fn serialize(doc: &mut Document, input: &[u8], report: &mut Report) -> Result<Vec<u8>> {
+    let mut modern = Vec::new();
+    doc.save_modern(&mut modern)
+        .context("serializing (xref stream)")?;
+    let mut classic = Vec::new();
+    doc.save_to(&mut classic)
+        .context("serializing (classic xref)")?;
+    let best = if classic.len() < modern.len() {
+        report.note("classic xref table was smaller than an xref stream");
+        classic
+    } else {
+        modern
+    };
+    if best.len() >= input.len() {
+        report.note(format!(
+            "no stage produced a smaller file ({} vs {} bytes); output is the input unchanged",
+            best.len(),
+            input.len()
+        ));
+        report.output_bytes = input.len();
+        return Ok(input.to_vec());
+    }
+    report.output_bytes = best.len();
+    Ok(best)
+}

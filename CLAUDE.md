@@ -103,7 +103,10 @@ It may mutate the document freely and must append what it did to the report.
 Rules:
 
 1. Never make the file larger. If the encoded result is not smaller, keep the
-   original bytes. This is the `Codecs::SOURCE` candidate in the image stage.
+   original bytes. This is the `Codecs::SOURCE` candidate in the image stage,
+   and `pipeline::serialize` applies the same rule to the whole file: it
+   writes the smaller of lopdf's two writers, and if neither beats the input
+   it writes the input bytes unchanged and says so in the report.
 2. Anything the stage does not fully understand is left byte-for-byte untouched
    and gets a `report.note(...)` saying why. Silent skips are bugs.
 3. Stages do not call each other. Shared analysis goes through `Context`.
@@ -134,7 +137,7 @@ behind.
 | images | `stages/images.rs` | image XObjects, `Context.usage` | image streams and dictionaries | Classify, decode to raster, transform (clip to crop box, color conversion, color-complexity reduction, downsampling), encode with every allowed codec plus the original bytes, keep the smallest, rewrite the stream keeping SMask/Mask consistent. Split into `images/{classify,decode,transform,encode,rewrite}.rs` when it grows. |
 | fonts | `stages/fonts.rs` | font dictionaries, content streams | font programs and dictionaries | Unembed the 14 standard fonts when the font's Unicode mapping is trustworthy; convert Type 1 programs to CFF; merge duplicate embeddings of the same font; subset embedded TrueType/CFF programs to the glyphs referenced by content streams. In that order, so subsetting runs once on the merged result. |
 | strip | `stages/strip.rs` | catalog, pages, XObjects | dictionary entries only | Remove the parts selected by `Strip` flags: threads, metadata streams, piece info, structure tree, thumbnails, spider info, alternate images, output intents. Removed objects become unreferenced and are collected by `structure`. |
-| structure | `stages/structure.rs` | whole object map | whole object map | Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, raise the header version to the minimum the output needs (1.4 for JBIG2, 1.5 for object streams). Object streams and xref streams come from `save_modern`. |
+| structure | `stages/structure.rs` | whole object map | whole object map | Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, pack non-stream objects into object streams, raise the header version to the minimum the output needs (1.4 for JBIG2, 1.5 for object streams). lopdf's `save_modern` writes the xref stream but does not pack object streams, so packing is our code. |
 
 ### Output verification
 
@@ -349,9 +352,12 @@ PDF/A conformance preservation.
 ### Open decisions
 
 - `lopdf` vs `qpdf` bindings. Starting with lopdf: pure Rust, no C++ build
-  step, direct access to the object map. Revisit if damaged-file handling or
-  object stream writing turns out inadequate; the `Stage` trait would not
-  change.
+  step, direct access to the object map. Known limits from the full-corpus
+  run: it does not pack object streams (so files that used them grow until
+  our packer exists); it loads some damaged-xref files into a broken graph
+  without error; it cannot load 11 of 4,368 corpus files and hangs on one.
+  Revisit if repair of damaged files becomes a goal; the `Stage` trait would
+  not change.
 - JPX decoding uses OpenJPEG (C) as the most mature option. A pure-Rust
   JPEG 2000 decoder (`pdfboss-jpx`) appeared in 2026; revisit once it has a
   track record, since it would make the build C-free apart from mozjpeg.
@@ -380,9 +386,16 @@ Fixed for v1 and expected to be revisited against evals results.
 
 ## Implementation status
 
-The skeleton compiles, runs end to end, and re-reads its own output. `main`,
-`cli`, `config`, `pipeline`, and `report` are complete for the design above;
-`config` and `usage` have unit tests. Stages:
+The crate is split into `src/lib.rs` (config, pipeline, report, stages) and
+a thin `src/main.rs`. It runs end to end and re-reads its own output.
+`main`, `cli`, `config`, `pipeline`, and `report` are complete for the
+design above; `config` and `usage` have unit tests. `tests/evals.rs` is in
+place: `cargo test --test evals` runs the `quick` subset under all three
+presets (78 trials, about two seconds) with the four structural invariants;
+the verify-based and render-based checks are not wired in yet. The full
+corpus (`EVALS_SUBSET=full`, standard preset, release build) runs in about
+a minute; `evals-expectations.toml` lists the 23 files lopdf cannot load,
+mis-parses, or hangs on. Stages:
 
 | Stage | Status | Done when |
 |---|---|---|

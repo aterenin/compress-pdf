@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-use crate::config::{ColorConversion, Config, Dpi, Preset};
+use compress_pdf::config::{ColorConversion, Config, Dpi, Preset};
 
 #[derive(Debug, Parser)]
 #[command(
