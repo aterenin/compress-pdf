@@ -28,13 +28,18 @@ hayro-syntax = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Planned, added when the owning stage is implemented (see CLAUDE.md):
-# image = "0.25"              # raster decode/resample (stage: images)
-# fast_image_resize = "6"     # high-quality downsampling (stage: images)
-# flate2 = "1.1"              # Flate encode with predictors (stage: images)
-# mozjpeg = "0.10"            # JPEG encode, smaller than libjpeg at equal quality (stage: images)
-# fax = "0.3"                 # CCITT G4 encode (stage: images)
-# jbig2enc-rust = "0.5"       # JBIG2 symbol-mode encode with shared globals (stage: images)
+# Image stage codecs.
+fast_image_resize = "6"     # downsampling
+flate2 = "1.1"              # Flate encode with predictors
+mozjpeg = "0.10"            # JPEG encode (C, via bindings)
+zune-core = "0.5"           # colorspace and option types shared with zune-jpeg
+zune-jpeg = "0.5"           # JPEG decode
+
+# Planned, added when the owning piece is implemented (see CLAUDE.md):
+# fax = "0.3"                 # CCITT G4 encode
+# jbig2enc-rust = "0.5"       # JBIG2 symbol-mode encode with shared globals
+# moxcms = "0.9"              # ICC color conversion
+# hayro-jbig2 / hayro-ccitt / hayro-jpeg2000  # input decoders (already built via hayro-syntax)
 
 # Used only by examples/ (the `cargo evals` tool) and tests.
 [dev-dependencies]
