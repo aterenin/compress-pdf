@@ -23,6 +23,8 @@ const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 struct State {
     ctm: Matrix,
     clip: Rect,
+    /// The font selected by the last `Tf`, part of the saved graphics state.
+    font: Option<ObjectId>,
 }
 
 /// Resource dictionaries to search, innermost first.
@@ -59,6 +61,7 @@ impl<'a> Walker<'a> {
                 State {
                     ctm: Matrix::IDENTITY,
                     clip,
+                    font: None,
                 },
             );
         }
@@ -83,8 +86,39 @@ impl<'a> Walker<'a> {
                 }
                 "Do" => self.do_xobject(op, chain, state),
                 "scn" | "SCN" => self.paint_pattern(op, chain, state),
+                "Tf" => state.font = self.select_font(op, chain),
+                "Tj" | "'" | "\"" | "TJ" => self.show_text(op, state.font),
                 _ => path.observe(op, &mut state),
             }
+        }
+    }
+
+    fn select_font(&self, op: &Operation, chain: &Chain) -> Option<ObjectId> {
+        let Some(Object::Name(name)) = op.operands.first() else {
+            return None;
+        };
+        lookup_reference(self.doc, chain, b"Font", name)
+    }
+
+    /// Record the string operands of a text-showing operator: the last
+    /// operand for `Tj`, `'` and `"`, and every string in the `TJ` array.
+    fn show_text(&mut self, op: &Operation, font: Option<ObjectId>) {
+        let Some(font) = font else {
+            return;
+        };
+        let strings = self.usage.fonts.entry(font).or_default();
+        match op.operands.last() {
+            Some(Object::String(s, _)) => {
+                strings.strings.insert(s.clone());
+            }
+            Some(Object::Array(items)) => {
+                for item in items {
+                    if let Object::String(s, _) = item {
+                        strings.strings.insert(s.clone());
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -148,7 +182,15 @@ impl<'a> Walker<'a> {
         }
         self.depth += 1;
         self.in_progress.insert(id);
-        self.walk(&content, &inner, State { ctm, clip });
+        self.walk(
+            &content,
+            &inner,
+            State {
+                ctm,
+                clip,
+                font: state.font,
+            },
+        );
         self.in_progress.remove(&id);
         self.depth -= 1;
     }
@@ -175,6 +217,7 @@ impl<'a> Walker<'a> {
         let base = State {
             ctm: Matrix::IDENTITY,
             clip: state.clip,
+            font: None,
         };
         self.walk_form(id, &stream, chain, base);
     }
@@ -197,7 +240,16 @@ impl<'a> Walker<'a> {
                 continue;
             };
             let ctm = appearance_ctm(self.doc, &form.dict, rect);
-            self.walk_form(id, form, chain, State { ctm, clip: rect });
+            self.walk_form(
+                id,
+                form,
+                chain,
+                State {
+                    ctm,
+                    clip: rect,
+                    font: None,
+                },
+            );
         }
     }
 }
@@ -309,6 +361,24 @@ fn own_resources(doc: &Document, dict: &Dictionary) -> Option<Dictionary> {
         Object::Reference(id) => doc.get_dictionary(*id).ok().cloned(),
         _ => None,
     }
+}
+
+/// Resolve a named resource of `category` to the object it references.
+fn lookup_reference(
+    doc: &Document,
+    chain: &Chain,
+    category: &[u8],
+    name: &[u8],
+) -> Option<ObjectId> {
+    for res in chain {
+        let Some(cat) = res.get(category).ok().and_then(|c| deref(doc, c)) else {
+            continue;
+        };
+        if let Ok(Object::Reference(id)) = cat.as_dict().and_then(|d| d.get(name)) {
+            return Some(*id);
+        }
+    }
+    None
 }
 
 /// Resolve a named resource of `category` to an indirect stream.

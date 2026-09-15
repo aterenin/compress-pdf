@@ -24,6 +24,19 @@ pub struct ImageRow {
     pub bytes_out: usize,
 }
 
+/// One row per embedded font program the font stage looked at.
+#[derive(Debug, Clone)]
+pub struct FontRow {
+    pub object: ObjectId,
+    pub name: String,
+    /// Program kind: Type1, TrueType, CFF, CIDFontType0C, OpenType.
+    pub program: String,
+    pub bytes_in: usize,
+    /// Short verb: "kept", "unembedded", "subset", "merged", "cff", "kept: <why>".
+    pub action: String,
+    pub bytes_out: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct StageSummary {
     pub name: &'static str,
@@ -37,6 +50,7 @@ pub struct Report {
     pub input_bytes: usize,
     pub output_bytes: usize,
     pub images: Vec<ImageRow>,
+    pub fonts: Vec<FontRow>,
     pub stages: Vec<StageSummary>,
     /// Free-form observations (unsupported features hit, fallbacks taken).
     pub notes: Vec<String>,
@@ -112,6 +126,27 @@ impl fmt::Display for Report {
                     r.bytes_in,
                     r.action,
                     r.filter_out,
+                    r.bytes_out,
+                )?;
+            }
+            writeln!(f)?;
+        }
+
+        if !self.fonts.is_empty() {
+            writeln!(
+                f,
+                "{:<9} {:<32} {:<14} {:>10} {:<22} {:>10}",
+                "object", "font", "program", "bytes in", "action", "bytes out"
+            )?;
+            for r in &self.fonts {
+                writeln!(
+                    f,
+                    "{:<9} {:<32} {:<14} {:>10} {:<22} {:>10}",
+                    format!("{} {}", r.object.0, r.object.1),
+                    r.name,
+                    r.program,
+                    r.bytes_in,
+                    r.action,
                     r.bytes_out,
                 )?;
             }

@@ -10,15 +10,19 @@
 //! placement that would suffer first from downsampling; its crop box is the
 //! union of the visible fractions.
 //!
-//! Images reached only through paths the walker does not follow (inline
-//! images, Type 3 glyph procedures, shading dictionaries) get no entry and
-//! are reported as unknown by the image stage. Nothing here mutates the
-//! document.
+//! The same walk records, per font object, every string shown with it
+//! (`Tj`, `TJ`, `'`, `"`), so the font stage knows which codes are used.
+//!
+//! Images and fonts reached only through paths the walker does not follow
+//! (inline images, Type 3 glyph procedures, shading dictionaries, form
+//! field default appearances) get no entry; the image stage reports such
+//! images as unknown and the font stage leaves such fonts alone. Nothing
+//! here mutates the document.
 
 mod geometry;
 mod walker;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::Result;
 use lopdf::{Document, ObjectId};
@@ -70,9 +74,19 @@ impl Usage {
     }
 }
 
+/// The strings a font was shown with, as raw code bytes.
+#[derive(Debug, Clone, Default)]
+pub struct TextUsage {
+    pub strings: BTreeSet<Vec<u8>>,
+}
+
 #[derive(Debug, Default)]
 pub struct ImageUsage {
     pub by_object: HashMap<ObjectId, Usage>,
+    /// Per font object: what was shown with it. A font that is used but
+    /// never appears here was reached through a path the walker does not
+    /// follow.
+    pub fonts: HashMap<ObjectId, TextUsage>,
 }
 
 pub struct AnalyzeUsage;
@@ -87,6 +101,8 @@ impl Stage for AnalyzeUsage {
             || config.gray_dpi.enabled()
             || config.color_dpi.enabled()
             || config.clip_images
+            || config.subset_fonts
+            || config.merge_fonts
     }
 
     fn run(&self, doc: &mut Document, ctx: &mut Context<'_>) -> Result<()> {
@@ -95,7 +111,11 @@ impl Stage for AnalyzeUsage {
         for page_id in doc.page_iter() {
             walker.walk_page(page_id);
         }
-        tracing::debug!(images = usage.by_object.len(), "usage analysis");
+        tracing::debug!(
+            images = usage.by_object.len(),
+            fonts = usage.fonts.len(),
+            "usage analysis"
+        );
         ctx.usage = usage;
         Ok(())
     }
@@ -150,6 +170,41 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn strings_are_recorded_per_font_through_q_and_forms() {
+        let (mut doc, _image) = doc_with_image(
+            b"BT /F1 12 Tf (ab) Tj q /F2 10 Tf [(c) -20 (d)] TJ Q (e) ' ET q /Fm1 Do Q",
+        );
+        let f1 = doc.add_object(
+            dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica" },
+        );
+        let f2 = doc.add_object(
+            dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier" },
+        );
+        let form = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => f2 } } },
+            b"BT /F1 8 Tf (z) Tj ET".to_vec(),
+        ));
+        let page_id = doc.page_iter().next().unwrap();
+        let page = doc.get_dictionary_mut(page_id).unwrap();
+        page.set(
+            "Resources",
+            dictionary! {
+                "Font" => dictionary! { "F1" => f1, "F2" => f2 },
+                "XObject" => dictionary! { "Fm1" => form },
+            },
+        );
+        let usage = analyze(&mut doc);
+        let shown =
+            |id: ObjectId| -> Vec<Vec<u8>> { usage.fonts[&id].strings.iter().cloned().collect() };
+        // After Q the font reverts to F1, so "e" belongs to it; inside the
+        // form the name F1 resolves to the form's own F2.
+        assert_eq!(shown(f1), vec![b"ab".to_vec(), b"e".to_vec()]);
+        assert_eq!(shown(f2), vec![b"c".to_vec(), b"d".to_vec(), b"z".to_vec()]);
     }
 
     #[test]
