@@ -42,8 +42,7 @@ hayro-jbig2 = "0.3"         # JBIG2 input decode (same crate hayro-syntax uses)
 
 hayro-jpeg2000 = "0.3"      # JPX input decode (same crate hayro-syntax uses)
 
-# Planned, added when the owning piece is implemented (see CLAUDE.md):
-# moxcms = "0.9"              # ICC color conversion
+moxcms = "0.9"              # ICC color conversion
 
 # Used only by examples/ (the `cargo evals` tool) and tests.
 [dev-dependencies]

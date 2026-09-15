@@ -42,6 +42,8 @@ pub struct ImageInfo {
     pub decode: Option<Vec<f32>>,
     pub is_stencil: bool,
     pub has_color_key_mask: bool,
+    /// The ICCBased profile stream, when the color space has one.
+    pub icc_profile: Option<lopdf::ObjectId>,
 }
 
 impl ImageInfo {
@@ -111,7 +113,18 @@ pub fn read_info(doc: &Document, dict: &Dictionary) -> Option<ImageInfo> {
         decode: decode_array(dict),
         is_stencil,
         has_color_key_mask: matches!(dict.get(b"Mask"), Ok(Object::Array(_))),
+        icc_profile: icc_profile_id(doc, dict),
     })
+}
+
+fn icc_profile_id(doc: &Document, dict: &Dictionary) -> Option<lopdf::ObjectId> {
+    let cs = dict.get(b"ColorSpace").ok()?;
+    let cs = doc.dereference(cs).map(|(_, o)| o).unwrap_or(cs);
+    let items = cs.as_array().ok()?;
+    if items.first()?.as_name().ok()? != b"ICCBased" {
+        return None;
+    }
+    items.get(1)?.as_reference().ok()
 }
 
 fn filters(dict: &Dictionary) -> Vec<String> {

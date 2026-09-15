@@ -380,6 +380,7 @@ mod tests {
             decode: None,
             is_stencil: false,
             has_color_key_mask: false,
+            icc_profile: None,
         }
     }
 

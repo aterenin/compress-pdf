@@ -27,7 +27,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use lopdf::{Document, Object, ObjectId, Stream};
 
-use crate::config::{Codecs, Config, Dpi};
+use crate::config::{Codecs, ColorConversion, Config, Dpi};
 use crate::pipeline::{Context, Stage};
 use crate::report::ImageRow;
 use classify::{Class, ImageInfo};
@@ -151,44 +151,107 @@ struct Task<'a> {
 }
 
 fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
-    let Task {
-        id,
-        stream,
-        info,
-        config,
-        dpi,
-    } = task;
-    let raster = match decode::decode(doc, stream, &info) {
-        Ok(r) => r,
+    let prepared = match prepare(doc, &task) {
+        Ok(p) => p,
         Err(Skip(reason)) => return Outcome::kept(reason),
     };
-    let target = downsample_target(&raster, &info, config, dpi);
+    let Some(best) = choose(&task, &prepared) else {
+        return Outcome::kept("no encoder for this class yet");
+    };
+    if best.bytes.len() >= task.stream.content.len() {
+        return Outcome::kept("source is smaller");
+    }
+    let (w, h) = (prepared.raster.width, prepared.raster.height);
+    if prepared.resized && !resize_soft_mask(doc, task.stream, w, h) {
+        return Outcome::kept("soft mask could not be resized");
+    }
+    write_back(doc, task.id, &prepared.raster, &best);
+    if prepared.converted {
+        set_color_space(doc, task.id, b"DeviceRGB");
+    }
+    Outcome {
+        action: prepared.action_label().into(),
+        codec: Some(best.codec),
+        bytes_out: Some(best.bytes.len()),
+    }
+}
+
+/// The raster after decoding and the transforms the preset asks for.
+struct Prepared {
+    raster: Raster,
+    resized: bool,
+    converted: bool,
+}
+
+fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
+    let raster = decode::decode(doc, task.stream, &task.info)?;
+    let target = downsample_target(&raster, &task.info, task.config, task.dpi);
     let (raster, resized) = match target.and_then(|(w, h)| transform::downsample(&raster, w, h)) {
         Some(small) => (small, true),
         None => (raster, false),
     };
-    let codecs = class_codecs(config, info.class());
-    let lossy_ok = !info.has_color_key_mask;
-    let mut candidates = candidates(&raster, codecs, lossy_ok, config.jpeg_quality);
-    if !resized && info.image_codec() == Some("DCTDecode") {
+    let (raster, converted) = match convert_color(doc, &raster, &task.info, task.config) {
+        Some(rgb) => (rgb, true),
+        None => (raster, false),
+    };
+    Ok(Prepared {
+        raster,
+        resized,
+        converted,
+    })
+}
+
+/// The smallest candidate encoding, or `None` when no encoder applies.
+fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
+    let codecs = class_codecs(task.config, task.info.class());
+    let lossy_ok = !task.info.has_color_key_mask;
+    let mut candidates = candidates(&prepared.raster, codecs, lossy_ok, task.config.jpeg_quality);
+    if !prepared.resized && !prepared.converted && task.info.image_codec() == Some("DCTDecode") {
         // The stored JPEG without any wrapper filters: lossless and often
         // smaller than the Flate-wrapped original.
-        candidates.extend(passthrough(stream, &info));
+        candidates.extend(passthrough(task.stream, &task.info));
     }
-    let Some(best) = candidates.into_iter().min_by_key(|e| e.bytes.len()) else {
-        return Outcome::kept("no encoder for this class yet");
-    };
-    if best.bytes.len() >= stream.content.len() {
-        return Outcome::kept("source is smaller");
+    candidates.into_iter().min_by_key(|e| e.bytes.len())
+}
+
+impl Prepared {
+    fn action_label(&self) -> &'static str {
+        match (self.resized, self.converted) {
+            (true, true) => "downsampled+rgb",
+            (true, false) => "downsampled",
+            (false, true) => "rgb",
+            (false, false) => "recoded",
+        }
     }
-    if resized && !resize_soft_mask(doc, stream, raster.width, raster.height) {
-        return Outcome::kept("soft mask could not be resized");
+}
+
+fn set_color_space(doc: &mut Document, id: ObjectId, name: &[u8]) {
+    if let Ok(Object::Stream(s)) = doc.get_object_mut(id) {
+        s.dict.set("ColorSpace", Object::Name(name.to_vec()));
     }
-    write_back(doc, id, &raster, &best);
-    Outcome {
-        action: if resized { "downsampled" } else { "recoded" }.into(),
-        codec: Some(best.codec),
-        bytes_out: Some(best.bytes.len()),
+}
+
+/// RGB conversion when the preset asks for it: CMYK through the embedded
+/// ICC profile when present, else the Neugebauer model; RGB with a profile
+/// through the profile. Gray images stay gray (converting them would only
+/// triple their size), and images with a color-key mask are never converted.
+fn convert_color(
+    doc: &Document,
+    raster: &Raster,
+    info: &ImageInfo,
+    config: &Config,
+) -> Option<Raster> {
+    if config.color_conversion != ColorConversion::Rgb || info.has_color_key_mask {
+        return None;
+    }
+    let profile = info.icc_profile.and_then(|id| match doc.get_object(id) {
+        Ok(Object::Stream(s)) => s.decompressed_content_with_limit(16 << 20).ok(),
+        _ => None,
+    });
+    match (raster.format, profile) {
+        (Format::Cmyk8 | Format::Rgb8, Some(bytes)) => transform::icc_to_rgb(raster, &bytes),
+        (Format::Cmyk8, None) => transform::cmyk_to_rgb(raster),
+        _ => None,
     }
 }
 
