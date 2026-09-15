@@ -2,12 +2,12 @@ mod cli;
 
 use std::fs;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use lopdf::Document;
 use tracing_subscriber::EnvFilter;
 
-use compress_pdf::{pipeline, report::Report};
+use compress_pdf::{pipeline, report::Report, verify};
 
 use crate::cli::Cli;
 
@@ -23,9 +23,29 @@ fn main() -> Result<()> {
     let mut doc =
         Document::load_mem(&input).with_context(|| format!("parsing {}", cli.input.display()))?;
 
+    let pages_in = doc.get_pages().len();
     let mut report = Report::new(input.len());
     pipeline::run(&mut doc, &config, &mut report)?;
     let buf = pipeline::serialize(&mut doc, &input, &mut report)?;
+
+    // Nothing to verify when the output is the input unchanged.
+    if buf != input {
+        let verification = verify::verify(&buf, pages_in);
+        report.note(verification.to_string());
+        if !verification.is_ok() {
+            // Problems the input already had are warnings; new ones are bugs.
+            let baseline = verify::verify(&input, pages_in);
+            let regressions = verification.regressions_from(&baseline);
+            if regressions.is_empty() {
+                report.note("warning: the input already had these problems; output written anyway");
+            } else {
+                print!("{report}");
+                bail!(
+                    "output failed verification with new problems {regressions:?}; nothing written (this is a bug, please report it)"
+                );
+            }
+        }
+    }
 
     if cli.dry_run {
         print!("{report}");

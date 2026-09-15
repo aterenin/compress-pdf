@@ -47,7 +47,15 @@ pub fn default_stages() -> Vec<Box<dyn Stage>> {
     ]
 }
 
+/// Error message for encrypted input; stable because callers match on it.
+pub const ENCRYPTED_INPUT: &str = "encrypted input is not supported";
+
 pub fn run(doc: &mut Document, config: &Config, report: &mut Report) -> Result<()> {
+    if doc.trailer.has(b"Encrypt") {
+        // Out of scope for v1 (CLAUDE.md). Refusing is safer than writing a
+        // file that claims to be encrypted but is not, or vice versa.
+        anyhow::bail!(ENCRYPTED_INPUT);
+    }
     let mut ctx = Context {
         config,
         report,

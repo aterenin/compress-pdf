@@ -101,3 +101,67 @@ reason = "lopdf loads a damaged xref into a broken object graph and the output d
 [[expect]]
 file = "pdfjs-linked/pdf.pdf"
 reason = "lopdf never finishes loading this file (hangs, multi-GB memory)"
+
+[[expect]]
+file = "pdfjs-linked/bug1130815.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs-linked/issue15577.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs-linked/issue1877.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs-linked/issue4387.pdf"
+reason = "lopdf's loader drops a stream object with a wrong /Length, so the output loses page content; verify blocks it (input decodes with hayro-syntax)"
+
+[[expect]]
+file = "pdfjs/test/pdfs/GHOSTSCRIPT-698804-1-fuzzed.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/Pages-tree-refs.pdf"
+reason = "hayro-syntax or lopdf never finishes on this pages tree (cyclic references); trial times out"
+
+[[expect]]
+file = "pdfjs/test/pdfs/bug1539074.1.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/bug1539074.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue10438_reduced.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue17554.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue9105_reduced.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue9418.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/named_dest_collision_for_editor.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/operator_list_cycle.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "pdfjs/test/pdfs/outlines_for_editor.pdf"
+reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken object graph and writes an unparseable file; verify blocks it"
+
+[[expect]]
+file = "verapdf/Isartor test files/PDFA-1b/6.1 File structure/6.1.7 Stream objects/isartor-6-1-7-t02-fail-a.pdf"
+reason = "lopdf's loader drops a stream object with a wrong /Length, so the output loses page content; verify blocks it (input decodes with hayro-syntax)"

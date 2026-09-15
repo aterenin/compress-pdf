@@ -149,12 +149,15 @@ Typst) is the independent reader; `hayro` is the rasterizer. Two levels:
 
 1. **Structural, always on.** Parse the output bytes with `hayro-syntax`.
    Check: the xref and trailer resolve; the page count equals the input's;
-   every page's content stream tokenizes; every image XObject and every
-   embedded font program decodes; every object the pipeline touched (from
-   the report) is reachable. Any failure is a **bug, not a warning**: the
-   output is not written, the process exits non-zero with the finding, and
-   the report is still printed so the failing object is identifiable. Cost is
-   one parse, comparable to the load.
+   every page's content stream decodes; every stream, images included,
+   decodes with its declared filters. Problems are grouped into categories
+   (parse, page count, content stream, stream, image). When the output has
+   any, the input is verified the same way as a baseline: problems the
+   input already had are reported as warnings and the output is still
+   written; a category with more problems than the input is a **bug, not a
+   warning**: the output is not written, the process exits non-zero with
+   the finding, and the report is still printed. Cost is one parse of the
+   output, plus one of the input only on the failure path.
 
 2. **Visual, opt-in (`--verify render`).** Rasterize every page of input and
    output with `hayro` at a fixed low resolution (72 dpi) and compare with
@@ -392,10 +395,15 @@ a thin `src/main.rs`. It runs end to end and re-reads its own output.
 design above; `config` and `usage` have unit tests. `tests/evals.rs` is in
 place: `cargo test --test evals` runs the `quick` subset under all three
 presets (78 trials, about two seconds) with the four structural invariants;
-the verify-based and render-based checks are not wired in yet. The full
-corpus (`EVALS_SUBSET=full`, standard preset, release build) runs in about
-a minute; `evals-expectations.toml` lists the 23 files lopdf cannot load,
-mis-parses, or hangs on. Stages:
+the render-based check is not wired in yet. `src/verify.rs` implements the
+structural level with `hayro-syntax`, with the input as baseline; `main`
+refuses to write on regressions and the harness fails on them. Encrypted
+input is refused by `pipeline::run` and the harness treats that refusal as
+the expected outcome. The full corpus (`EVALS_SUBSET=full`, standard
+preset, release build) runs in about 20 seconds; `evals-expectations.toml`
+lists 39 files: ones lopdf cannot load, loads into a broken graph, or hangs
+on, plus two where its loader drops a stream with a wrong `/Length` and
+verification blocks the resulting content loss. Stages:
 
 | Stage | Status | Done when |
 |---|---|---|
@@ -419,7 +427,7 @@ links. `evals.toml` defines the `quick` subset (26 files, 4.7 MB, every
 handled feature at least twice plus seven realistic documents) and an empty
 `scoring` subset; `status` reports each subset's presence on disk.
 
-Not yet present: the `verify` step (`src/verify.rs`, `hayro-syntax` and
-`hayro`), the library/binary split, `tests/probes.rs` and its generators,
+Not yet present: the visual level of `verify` (`hayro` rendering and SSIM),
+`tests/probes.rs` and its generators,
 `tests/evals.rs` with `libtest-mimic`, `evals-expectations.toml`, the
 `score` and `probes` subcommands, and the rasterize-and-compare check.

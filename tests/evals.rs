@@ -22,6 +22,7 @@ use std::{env, fs, thread};
 use compress_pdf::config::{Config, Preset};
 use compress_pdf::pipeline;
 use compress_pdf::report::Report;
+use compress_pdf::verify;
 use libtest_mimic::{Arguments, Failed, Trial};
 use lopdf::Document;
 use serde::Deserialize;
@@ -185,12 +186,18 @@ fn trial_timeout() -> Duration {
 /// Runs the trial on a helper thread so a hang becomes a timeout failure
 /// instead of stalling the whole suite. The thread is leaked on timeout;
 /// the process exits when the suite ends.
+/// Deeply nested objects recurse deeply in both parsers; give trials room.
+const TRIAL_STACK_BYTES: usize = 256 * 1024 * 1024;
+
 fn run_one(path: &Path, preset: Preset) -> Result<(), Failed> {
     let (tx, rx) = mpsc::channel();
     let path = path.to_path_buf();
-    thread::spawn(move || {
-        let _ = tx.send(run_one_inner(&path, preset));
-    });
+    thread::Builder::new()
+        .stack_size(TRIAL_STACK_BYTES)
+        .spawn(move || {
+            let _ = tx.send(run_one_inner(&path, preset));
+        })
+        .map_err(|e| format!("spawn: {e}"))?;
     match rx.recv_timeout(trial_timeout()) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -206,6 +213,15 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
     let pages_in = doc.get_pages().len();
 
     let mut report = Report::new(input.len());
+    if doc.trailer.has(b"Encrypt") {
+        // Encrypted input is out of scope for v1: the expected outcome is a
+        // clean refusal, not an output file.
+        return match pipeline::run(&mut doc, &Config::preset(preset), &mut report) {
+            Err(e) if e.to_string() == pipeline::ENCRYPTED_INPUT => Ok(()),
+            Err(e) => Err(format!("encrypted input: wrong error: {e:#}").into()),
+            Ok(()) => Err("encrypted input was not refused".into()),
+        };
+    }
     pipeline::run(&mut doc, &Config::preset(preset), &mut report)
         .map_err(|e| format!("pipeline failed: {e:#}"))?;
 
@@ -241,6 +257,17 @@ fn check_output(
                 row.object.0, row.object.1, row.bytes_in, row.bytes_out
             )
             .into());
+        }
+    }
+    if output != input {
+        let v = verify::verify(output, pages_in);
+        if !v.is_ok() {
+            // Damage the input already had is not ours; only new problems fail.
+            let baseline = verify::verify(input, pages_in);
+            let regressions = v.regressions_from(&baseline);
+            if !regressions.is_empty() {
+                return Err(format!("verification regressions {regressions:?}\n{v}").into());
+            }
         }
     }
     Ok(())

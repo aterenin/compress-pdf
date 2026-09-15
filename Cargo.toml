@@ -23,6 +23,8 @@ harness = false
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 lopdf = "0.45"
+# Independent reader used only by the verify step (shares no code with lopdf).
+hayro-syntax = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

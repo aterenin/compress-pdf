@@ -7,3 +7,4 @@ pub mod config;
 pub mod pipeline;
 pub mod report;
 pub mod stages;
+pub mod verify;
