@@ -452,12 +452,19 @@ clip safely.
 Present: `evals.toml` with the three sources pinned, and `examples/evals.rs`
 behind the `cargo evals` alias with `fetch` (shallow sparse clones, pdf.js
 link resolution with recorded failures, manifest) and `status` working;
-`probes` writes the synthetic documents; `score` is a stub that exits with
-"not implemented". A full
+`probes` writes the synthetic documents; `score` runs a subset through
+the pipeline in-process and prints, per preset, one row per file with
+input size, our size and ratio, and one column per reference directory
+with its size and ratio, then totals (a reference's total over the files
+it covers, with our total on the same files and the coverage count).
+No reference outputs exist yet. A full
 fetch takes about five minutes and 1.1 GB; re-running retries only failed
 links. `evals.toml` defines the `quick` subset (26 files, 4.7 MB, every
-handled feature at least twice plus seven realistic documents) and an empty
-`scoring` subset; `status` reports each subset's presence on disk.
+handled feature at least twice plus seven realistic documents) and the
+`scoring` subset (34 py-pdf files, all but the password-protected one,
+plus eight realistic pdf.js documents: papers with Type 1 and TrueType
+fonts, a slide deck, scans with JPX and CCITT, a CID-keyed CFF; about 28
+MB); `status` reports each subset's presence on disk.
 
 Present: `tests/probes.rs` with its generators in
 `tests/probes/generators.rs` (fifteen one-variable documents: CMYK, gray
@@ -468,6 +475,5 @@ asserted against the presets' stated behavior and all run through every
 preset with the structural verifier; `cargo evals probes <dir>` writes the
 same files with a README listing them.
 
-Not yet present: the visual level of `verify` (`hayro` rendering and SSIM),
-the `score` subcommand, and the rasterize-and-compare check in the
-corpus harness.
+Not yet present: the visual level of `verify` (`hayro` rendering and SSIM)
+and the rasterize-and-compare check in the corpus harness and in `score`.

@@ -1,6 +1,6 @@
 //! `cargo evals <subcommand>`: evaluation tooling (see CLAUDE.md, "Evals tooling").
 //!
-//! Implemented: `fetch`, `status`, `probes`. Stub: `score`.
+//! All subcommands are implemented; see the `Cmd` enum.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,6 +14,8 @@ use anyhow::{Context, Result, bail};
 
 #[path = "../tests/probes/generators.rs"]
 mod generators;
+#[path = "evals/score.rs"]
+mod score;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -105,8 +107,20 @@ enum Cmd {
     },
     /// Show what is present, missing, or stale versus the pins.
     Status,
-    /// Size comparison against reference outputs (not implemented yet).
-    Score,
+    /// Run a subset through the pipeline and compare output sizes with
+    /// reference outputs under evals/reference/<name>/.
+    Score {
+        /// Our preset to score (default: each preset against the references
+        /// whose name ends in it).
+        #[arg(long)]
+        preset: Option<String>,
+        /// One reference directory name; default: every matching one.
+        #[arg(long)]
+        reference: Option<String>,
+        /// Subset from evals.toml.
+        #[arg(long, default_value = "scoring")]
+        subset: String,
+    },
     /// Write the synthetic probe PDFs to a directory, one per probe, for
     /// running through a reference tool.
     Probes {
@@ -119,7 +133,11 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Fetch { name } => fetch(name.as_deref()),
         Cmd::Status => status(),
-        Cmd::Score => bail!("`score` is not implemented yet"),
+        Cmd::Score {
+            preset,
+            reference,
+            subset,
+        } => score::score(preset.as_deref(), reference.as_deref(), &subset),
         Cmd::Probes { out } => probes(&out),
     }
 }

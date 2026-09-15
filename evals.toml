@@ -36,7 +36,54 @@ roles = ["soak"]
 # against reference outputs by `cargo evals score`; populated once reference
 # outputs exist for the chosen files.
 [subsets]
-scoring = []
+scoring = [
+    # py-pdf sample files (all but the password-protected one, which the
+    # pipeline refuses by design).
+    "py-pdf/001-trivial/minimal-document.pdf",
+    "py-pdf/002-trivial-libre-office-writer/002-trivial-libre-office-writer.pdf",
+    "py-pdf/003-pdflatex-image/pdflatex-image.pdf",
+    "py-pdf/004-pdflatex-4-pages/pdflatex-4-pages.pdf",
+    "py-pdf/006-pdflatex-outline/pdflatex-outline.pdf",
+    "py-pdf/007-imagemagick-images/imagemagick-ASCII85Decode.pdf",
+    "py-pdf/007-imagemagick-images/imagemagick-CCITTFaxDecode.pdf",
+    "py-pdf/007-imagemagick-images/imagemagick-images.pdf",
+    "py-pdf/007-imagemagick-images/imagemagick-lzw.pdf",
+    "py-pdf/008-reportlab-inline-image/inline-image.pdf",
+    "py-pdf/009-pdflatex-geotopo/GeoTopo-komprimiert.pdf",
+    "py-pdf/009-pdflatex-geotopo/GeoTopo.pdf",
+    "py-pdf/010-pdflatex-forms/pdflatex-forms.pdf",
+    "py-pdf/011-google-doc-document/google-doc-document.pdf",
+    "py-pdf/012-libreoffice-form/libreoffice-form.pdf",
+    "py-pdf/013-reportlab-overlay/reportlab-overlay.pdf",
+    "py-pdf/014-outlines/mistitled_outlines_example.pdf",
+    "py-pdf/015-arabic/habibi-oneline-cmap.pdf",
+    "py-pdf/015-arabic/habibi-rotated.pdf",
+    "py-pdf/015-arabic/habibi.pdf",
+    "py-pdf/016-libre-office-link/libre-office-link.pdf",
+    "py-pdf/017-unreadable-meta-data/unreadablemetadata.pdf",
+    "py-pdf/018-base64-image/base64image.pdf",
+    "py-pdf/019-grayscale-image/grayscale-image.pdf",
+    "py-pdf/020-xmp/output_with_metadata_pymupdf.pdf",
+    "py-pdf/021-pdfa/crazyones-pdfa.pdf",
+    "py-pdf/022-pdfkit/pdfkit.pdf",
+    "py-pdf/023-cmyk-image/cmyk-image.pdf",
+    "py-pdf/024-annotations/annotated_pdf.pdf",
+    "py-pdf/025-attachment/with-attachment.pdf",
+    "py-pdf/026-latex-multicolumn/multicolumn.pdf",
+    "py-pdf/027-cropped-rotated-scaled/cropped-rotated-scaled.pdf",
+    "py-pdf/028-image-references-deduplication/wrong-references.pdf",
+    "py-pdf/029-optional-content-groups/ocg_map_test.pdf",
+    # Realistic documents from pdf.js: papers with Type 1 and TrueType
+    # fonts, a slide deck, scans with JPX and CCITT, a CID-keyed CFF.
+    "pdfjs/test/pdfs/tracemonkey.pdf",
+    "pdfjs/test/pdfs/TAMReview.pdf",
+    "pdfjs-linked/issue1998.pdf",
+    "pdfjs-linked/fit11-talk.pdf",
+    "pdfjs/test/pdfs/issue19971.pdf",
+    "pdfjs/test/pdfs/issue17069.pdf",
+    "pdfjs/test/pdfs/issue6286.pdf",
+    "pdfjs/test/pdfs/bug1755507.pdf",
+]
 
 # `quick`: about 26 files, under 5 MB. Chosen so that every encoding and
 # feature we handle appears in at least two files (jbig2, jpx, ccitt, dct,
