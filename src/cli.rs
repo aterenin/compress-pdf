@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-use compress_pdf::config::{ColorConversion, Config, Dpi, Preset};
+use compress_pdf::config::{Config, Dpi, Preset};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -35,10 +35,6 @@ pub struct Cli {
     /// JPEG quality, 1-100.
     #[arg(long, value_name = "Q", value_parser = clap::value_parser!(u8).range(1..=100))]
     pub quality: Option<u8>,
-
-    /// Convert all color images to grayscale.
-    #[arg(long)]
-    pub grayscale: bool,
 
     /// Run the full pipeline and print the report, but do not write the output file.
     #[arg(long)]
@@ -85,9 +81,6 @@ impl Cli {
         }
         if let Some(q) = self.quality {
             cfg.jpeg_quality = q;
-        }
-        if self.grayscale {
-            cfg.color_conversion = ColorConversion::Gray;
         }
         debug_assert!(Dpi::is_sane(&cfg.color_dpi));
         cfg

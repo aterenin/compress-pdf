@@ -10,10 +10,8 @@
 //!   SPIDER           catalog /SpiderInfo
 //!   ALTERNATES       image /Alternates
 //!   OUTPUT_INTENTS   catalog /OutputIntents
-//!   FORMS/LINKS/ANNOTS/INVISIBLE_ANNOTS
-//!                    page /Annots entries by subtype or flags, plus /AcroForm;
-//!                    flattening appearances is out of scope for v1, so these
-//!                    remove rather than flatten and must be documented as such
+//!
+//! Annotations and form fields are never touched (no preset asks for it).
 //!
 //! Removed objects become unreferenced and are collected by the structure
 //! stage, so this stage only edits dictionaries.

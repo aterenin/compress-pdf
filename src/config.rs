@@ -15,16 +15,16 @@ pub struct Codecs(u16);
 
 impl Codecs {
     pub const NONE: Codecs = Codecs(0);
-    pub const RAW: Codecs = Codecs(1 << 0);
-    pub const JPEG: Codecs = Codecs(1 << 1);
-    pub const FLATE: Codecs = Codecs(1 << 2);
-    pub const LZW: Codecs = Codecs(1 << 3);
-    pub const G3: Codecs = Codecs(1 << 4);
-    pub const G3_2D: Codecs = Codecs(1 << 5);
-    pub const G4: Codecs = Codecs(1 << 6);
-    pub const JBIG2: Codecs = Codecs(1 << 7);
-    pub const JPX: Codecs = Codecs(1 << 8);
-    pub const SOURCE: Codecs = Codecs(1 << 10);
+    /// DCT (lossy), continuous-tone images.
+    pub const JPEG: Codecs = Codecs(1 << 0);
+    /// Flate with per-image predictor choice (lossless).
+    pub const FLATE: Codecs = Codecs(1 << 1);
+    /// CCITT Group 4, bitonal images.
+    pub const G4: Codecs = Codecs(1 << 2);
+    /// JBIG2 symbol mode with shared globals, bitonal images.
+    pub const JBIG2: Codecs = Codecs(1 << 3);
+    /// The original bytes as a candidate.
+    pub const SOURCE: Codecs = Codecs(1 << 4);
 
     pub const fn contains(self, other: Codecs) -> bool {
         self.0 & other.0 == other.0
@@ -34,16 +34,11 @@ impl Codecs {
         self.0 == 0
     }
 
-    const NAMES: [(Codecs, &'static str); 10] = [
-        (Codecs::RAW, "raw"),
+    const NAMES: [(Codecs, &'static str); 5] = [
         (Codecs::JPEG, "jpeg"),
         (Codecs::FLATE, "flate"),
-        (Codecs::LZW, "lzw"),
-        (Codecs::G3, "g3"),
-        (Codecs::G3_2D, "g3-2d"),
         (Codecs::G4, "g4"),
         (Codecs::JBIG2, "jbig2"),
-        (Codecs::JPX, "jpx"),
         (Codecs::SOURCE, "source"),
     ];
 }
@@ -82,17 +77,13 @@ impl Strip {
     pub const THUMBNAILS: Strip = Strip(1 << 4);
     pub const SPIDER: Strip = Strip(1 << 5);
     pub const ALTERNATES: Strip = Strip(1 << 6);
-    pub const FORMS: Strip = Strip(1 << 7);
-    pub const LINKS: Strip = Strip(1 << 8);
-    pub const ANNOTS: Strip = Strip(1 << 9);
-    pub const OUTPUT_INTENTS: Strip = Strip(1 << 10);
-    pub const INVISIBLE_ANNOTS: Strip = Strip(1 << 11);
+    pub const OUTPUT_INTENTS: Strip = Strip(1 << 7);
 
     pub const fn contains(self, other: Strip) -> bool {
         self.0 & other.0 == other.0
     }
 
-    const NAMES: [(Strip, &'static str); 12] = [
+    const NAMES: [(Strip, &'static str); 8] = [
         (Strip::THREADS, "threads"),
         (Strip::METADATA, "metadata"),
         (Strip::PIECE_INFO, "piece-info"),
@@ -100,11 +91,7 @@ impl Strip {
         (Strip::THUMBNAILS, "thumbnails"),
         (Strip::SPIDER, "spider"),
         (Strip::ALTERNATES, "alternates"),
-        (Strip::FORMS, "forms"),
-        (Strip::LINKS, "links"),
-        (Strip::ANNOTS, "annots"),
         (Strip::OUTPUT_INTENTS, "output-intents"),
-        (Strip::INVISIBLE_ANNOTS, "invisible-annots"),
     ];
 }
 
@@ -129,12 +116,12 @@ impl fmt::Debug for Strip {
     }
 }
 
+/// Target color space for images. Only what a preset uses exists here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorConversion {
     None,
+    /// Convert every color image to RGB through ICC profiles.
     Rgb,
-    Cmyk,
-    Gray,
 }
 
 /// Downsampling rule for one image class.
@@ -179,7 +166,7 @@ pub struct Config {
     pub gray_dpi: Dpi,
     pub color_dpi: Dpi,
 
-    /// 1-100, applies to JPEG (and JPX if ever enabled).
+    /// 1-100, JPEG quality index.
     pub jpeg_quality: u8,
     pub color_conversion: ColorConversion,
     /// Crop image pixels that lie outside their clip path before recompressing.
@@ -239,7 +226,6 @@ impl Config {
             continuous: Codecs::JPEG | Codecs::FLATE | Codecs::SOURCE,
             indexed: Codecs::FLATE | Codecs::SOURCE,
             jpeg_quality: 80,
-            color_conversion: ColorConversion::Cmyk,
             clip_images: true,
             reduce_color_complexity: true,
             subset_fonts: true,
@@ -277,7 +263,6 @@ impl Config {
                 gray_dpi: Dpi::new(150.0, 150.0),
                 color_dpi: Dpi::new(150.0, 150.0),
                 jpeg_quality: 60,
-                color_conversion: ColorConversion::None,
                 strip: Strip::THREADS
                     | Strip::METADATA
                     | Strip::PIECE_INFO

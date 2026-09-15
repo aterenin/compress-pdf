@@ -405,11 +405,6 @@ mis-parses, or hangs on. Stages:
 | strip | stub | Every `Strip` flag removes the keys in the mapping table. |
 | structure | minimal: compress, prune, renumber | Hash dedupe of identical streams and dictionaries; unused `/Resources` entries dropped; content streams re-serialized; version bump. |
 
-`config.rs` still carries codec constants, CMYK and gray conversion targets,
-and strip flags that the scope rule removes, and `cli.rs` still has a
-`--grayscale` flag; the implementation pass trims them to match the Presets
-section.
-
 Planned implementation order: structure, strip, usage, images, fonts. This
 differs from pipeline order on purpose: structure and strip are cheap and
 verify the harness; usage must exist before images can downsample or clip
