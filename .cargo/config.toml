@@ -1,0 +1,5 @@
+# Project-local cargo aliases. `cargo evals <subcommand>` drives the
+# evaluation tooling: fetching the corpus, scoring against reference outputs,
+# and writing probe PDFs (see CLAUDE.md, "Evals tooling").
+[alias]
+evals = "run --quiet --example evals --"

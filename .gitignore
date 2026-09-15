@@ -2,8 +2,8 @@
 .DS_Store
 
 # Evaluation data: corpus fetched by `cargo evals fetch`, reference outputs
-# under evals/reference/<preset>/, probe PDFs, and any third-party material
-# kept for local comparison. Never committed; never a build input.
+# under evals/reference/<tool>-<preset>/, probe PDFs, and any third-party
+# material kept for local comparison. Never committed; never a build input.
 /evals/
 /reference/
 

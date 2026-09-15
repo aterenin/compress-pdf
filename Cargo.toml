@@ -1,0 +1,37 @@
+[package]
+name = "compress-pdf"
+version = "0.1.0"
+edition = "2024"
+description = "Command-line PDF compressor: image recompression, font subsetting, and structural cleanup with presets"
+license = "MIT"
+
+[[bin]]
+name = "compress-pdf"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+lopdf = "0.45"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Planned, added when the owning stage is implemented (see CLAUDE.md):
+# image = "0.25"              # raster decode/resample (stage: images)
+# fast_image_resize = "6"     # high-quality downsampling (stage: images)
+# flate2 = "1.1"              # Flate encode with predictors (stage: images)
+# mozjpeg = "0.10"            # JPEG encode, smaller than libjpeg at equal quality (stage: images)
+# fax = "0.3"                 # CCITT G4 encode (stage: images)
+# jbig2enc-rust = "0.5"       # JBIG2 symbol-mode encode with shared globals (stage: images)
+
+# Used only by examples/ (the `cargo evals` tool) and tests.
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+ureq = "3.4"
+walkdir = "2.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -278,6 +278,16 @@ Three layers, all run by `cargo test`:
    are reported as ignored, so the suite stays green and the list is the
    backlog.
 
+   The corpus is 4,000+ files and 1 GB, so `cargo test` does not run all of
+   it. `evals.toml` defines named subsets under `[subsets]`; `quick` is an
+   explicit list of about 25 small files chosen so that every encoding and
+   feature we handle appears at least twice, plus a few realistic
+   multi-page documents, totalling a few MB. The harness runs `quick` by
+   default. `EVALS_SUBSET=full` (or `=scoring`, or any other subset name)
+   selects a different one; the files outside the selected subset are
+   registered as ignored tests, so `cargo test --test evals -- --ignored`
+   also runs everything.
+
 **Evals tooling** is one example binary, `examples/evals.rs`, exposed
 through a cargo alias in `.cargo/config.toml` so it reads as a cargo
 subcommand:
@@ -392,8 +402,16 @@ differs from pipeline order on purpose: structure and strip are cheap and
 verify the harness; usage must exist before images can downsample or clip
 safely.
 
+Present: `evals.toml` with the three sources pinned, and `examples/evals.rs`
+behind the `cargo evals` alias with `fetch` (shallow sparse clones, pdf.js
+link resolution with recorded failures, manifest) and `status` working;
+`score` and `probes` are stubs that exit with "not implemented". A full
+fetch takes about five minutes and 1.1 GB; re-running retries only failed
+links. `evals.toml` defines the `quick` subset (26 files, 4.7 MB, every
+handled feature at least twice plus seven realistic documents) and an empty
+`scoring` subset; `status` reports each subset's presence on disk.
+
 Not yet present: the `verify` step (`src/verify.rs`, `hayro-syntax` and
-`hayro`), the library/binary split, `tests/probes.rs` and its generators, `tests/evals.rs` with `libtest-mimic`, `evals.toml`,
-`evals-expectations.toml`, the `examples/evals.rs` tool behind the
-`cargo evals` alias (the alias itself exists in `.cargo/config.toml`), and
-the rasterize-and-compare check.
+`hayro`), the library/binary split, `tests/probes.rs` and its generators,
+`tests/evals.rs` with `libtest-mimic`, `evals-expectations.toml`, the
+`score` and `probes` subcommands, and the rasterize-and-compare check.

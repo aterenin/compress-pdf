@@ -1,0 +1,76 @@
+# Evaluation corpus sources. Consumed by `cargo evals fetch` / `cargo evals status`.
+#
+# Each source is cloned shallowly at the pinned commit into evals/corpus/<name>/,
+# restricted to `paths` with a sparse checkout. Bump `rev` deliberately; the
+# manifest written by `fetch` records what is actually on disk.
+
+[[source]]
+name = "py-pdf"
+git = "https://github.com/py-pdf/sample-files"
+rev = "02b8203bf416db3dbdb03438bc8278dfcb0555f3"
+paths = ["."]
+license = "CC-BY-SA-4.0"
+roles = ["scoring", "soak"]
+
+[[source]]
+name = "pdfjs"
+git = "https://github.com/mozilla/pdf.js"
+rev = "59c19f10ed1f11504d0684b491bbd464d08fad2f"
+paths = ["test/pdfs"]
+license = "Apache-2.0 for the repository; individual test PDFs carry their own terms"
+roles = ["soak"]
+# *.link files hold a URL each; `fetch` downloads them into evals/corpus/pdfjs-linked/.
+links = true
+
+[[source]]
+name = "verapdf"
+git = "https://github.com/veraPDF/veraPDF-corpus"
+rev = "b6aeac4fbef2ced8aa134df131056b6467676aa9"
+paths = ["."]
+license = "CC-BY-4.0"
+roles = ["soak"]
+
+# Named subsets, as paths relative to evals/corpus/. The evals test harness
+# runs `quick` by default (EVALS_SUBSET=<name> selects another; `full` is
+# every PDF under evals/corpus/). `scoring` is the hand-picked set compared
+# against reference outputs by `cargo evals score`; populated once reference
+# outputs exist for the chosen files.
+[subsets]
+scoring = []
+
+# `quick`: about 26 files, under 5 MB. Chosen so that every encoding and
+# feature we handle appears in at least two files (jbig2, jpx, ccitt, dct,
+# separation, devicen, indexed, icc, lab, smask, type1, truetype, cff, type3,
+# object streams, encryption, thumbnails, annots, structure tree, inline
+# images, patterns, cmyk, output intents), plus realistic multi-page
+# documents so that compression actually has work to do.
+quick = [
+  # feature coverage, tiny regression cases
+  "pdfjs-linked/bug1753075.pdf",
+  "pdfjs-linked/issue12213.1.pdf",
+  "pdfjs-linked/issue13132.pdf",
+  "pdfjs-linked/issue17232.pdf",
+  "pdfjs/test/pdfs/bitmap-trailing-7fff-stripped-harder.pdf",
+  "pdfjs/test/pdfs/bug1743245.pdf",
+  "pdfjs/test/pdfs/devicen.pdf",
+  "pdfjs/test/pdfs/issue13561_reduced.pdf",
+  "pdfjs/test/pdfs/issue14256.pdf",
+  "pdfjs/test/pdfs/issue19532.pdf",
+  "pdfjs/test/pdfs/issue3371.pdf",
+  "pdfjs/test/pdfs/issue5896.pdf",
+  "pdfjs/test/pdfs/tagged_stamp.pdf",
+  "py-pdf/025-attachment/with-attachment.pdf",
+  "verapdf/Isartor test files/PDFA-1b/6.2 Graphics/6.2.3 Colour spaces/6.2.3.3 Uncalibrated colour spaces/isartor-6-2-3-3-t03-fail-c.pdf",
+  "verapdf/Isartor test files/PDFA-1b/6.3 Fonts/6.3.2 Font types/isartor-6-3-2-t01-fail-b.pdf",
+  "verapdf/Isartor test files/PDFA-1b/6.3 Fonts/6.3.6 Font metrics/isartor-6-3-6-t01-fail-a.pdf",
+  "verapdf/PDF_A-2b/6.2 Graphics/6.2.8 Images/6.2.8.1 General/veraPDF test suite 6-2-8-1-t03-pass-a.pdf",
+  "verapdf/PDF_A-4/6.6 Action/6.6.3 Trigger events/veraPDF test suite 6-6-3-t01-pass-b.pdf",
+  # realistic documents
+  "pdfjs-linked/aboutstacks.pdf",                              # office document, JPEG images, TrueType
+  "pdfjs-linked/JBIG2Globals.pdf",                             # scan with shared JBIG2 globals
+  "pdfjs-linked/issue13051.pdf",                               # JPEG 2000 images
+  "pdfjs/test/pdfs/issue5747.pdf",                             # CCITT scan
+  "pdfjs/test/pdfs/tracemonkey_a11y.pdf",                      # LaTeX paper, Type 1 fonts, tagged
+  "py-pdf/023-cmyk-image/cmyk-image.pdf",                      # CMYK image
+  "py-pdf/009-pdflatex-geotopo/GeoTopo-komprimiert.pdf",       # 1.7 MB LaTeX with figures
+]
