@@ -19,7 +19,7 @@ mod bitonal;
 mod classify;
 mod decode;
 mod encode;
-mod raster;
+mod function;
 mod transform;
 
 use std::collections::HashSet;
@@ -33,7 +33,7 @@ use crate::report::ImageRow;
 use classify::{Class, ImageInfo};
 use decode::Skip;
 use encode::Encoded;
-use raster::{Format, Raster};
+use transform::{Format, Raster};
 
 pub struct RecompressImages;
 
@@ -186,7 +186,7 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
         return Outcome::kept("mask could not be resized");
     }
     write_back(doc, task.id, &prepared.raster, &best);
-    if prepared.converted || prepared.reduced {
+    if prepared.converted || prepared.reduced || prepared.mapped {
         set_color_space(doc, task.id, prepared.raster.format);
     }
     if let Some(unit) = prepared.crop {
@@ -207,6 +207,9 @@ struct Prepared {
     crop: Option<[f32; 4]>,
     resized: bool,
     converted: bool,
+    /// Samples were moved from a Separation, DeviceN or Lab space into
+    /// its device alternate, so the dictionary's color space must follow.
+    mapped: bool,
 }
 
 fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
@@ -234,6 +237,7 @@ fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
         crop,
         resized,
         converted,
+        mapped: matches!(task.info.color, classify::ColorSpace::Mapped { .. }),
     })
 }
 
@@ -313,6 +317,7 @@ fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
     if !prepared.resized
         && !prepared.converted
         && !prepared.reduced
+        && !prepared.mapped
         && prepared.crop.is_none()
         && task.info.image_codec() == Some("DCTDecode")
     {
@@ -326,6 +331,7 @@ fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
 impl Prepared {
     fn action_label(&self) -> String {
         let steps: Vec<&str> = [
+            (self.mapped, "alternate"),
             (self.reduced, "reduced"),
             (self.crop.is_some(), "clipped"),
             (self.resized, "downsampled"),

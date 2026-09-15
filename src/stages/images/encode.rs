@@ -7,7 +7,7 @@ use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use lopdf::{Dictionary, Object, Stream, dictionary};
 
-use super::raster::{Format, Raster};
+use super::transform::{Format, Raster};
 
 #[derive(Debug, Clone)]
 pub struct Encoded {

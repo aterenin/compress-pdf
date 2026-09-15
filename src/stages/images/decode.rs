@@ -2,9 +2,11 @@
 //!
 //! Handled: raw or standard-filter samples (lopdf applies Flate, LZW,
 //! RunLength, ASCII filters and PNG/TIFF predictors) at 1, 2, 4, 8 and 16
-//! bits in Gray, RGB, CMYK and Indexed spaces, with `Decode` arrays; and
-//! DCT via zune-jpeg for Gray and RGB. Everything else returns `Skip` with
-//! the reason, and the caller keeps the image untouched.
+//! bits in Gray, RGB, CMYK and Indexed spaces, with `Decode` arrays; DCT
+//! via zune-jpeg; CCITT, JBIG2 and JPX via hayro's decoders; and
+//! Separation, DeviceN and Lab samples mapped into their device
+//! alternate. Everything else returns `Skip` with the reason, and the
+//! caller keeps the image untouched.
 
 use lopdf::{Dictionary, Document, Object, Stream};
 use zune_core::bytestream::ZCursor;
@@ -13,8 +15,8 @@ use zune_core::options::DecoderOptions;
 use zune_jpeg::JpegDecoder;
 
 use super::bitonal;
-use super::classify::{ColorModel, ColorSpace, ImageInfo};
-use super::raster::{Format, Raster};
+use super::classify::{self, ColorModel, ColorSpace, ImageInfo, Mapping, Memo};
+use super::transform::{Format, Raster};
 
 const MAX_DECODED_BYTES: usize = 512 * 1024 * 1024;
 
@@ -29,6 +31,9 @@ impl Skip {
 }
 
 pub fn decode(doc: &Document, stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
+    if let ColorSpace::Mapped { source, .. } = &info.color {
+        return decode_mapped(doc, stream, info, source);
+    }
     match info.image_codec() {
         None => decode_samples(stream, info),
         Some("DCTDecode") => decode_jpeg(stream, info),
@@ -75,7 +80,7 @@ fn decode_jpx(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
         return Err(Skip::new("JPX with an unknown color space"));
     }
     if let ColorSpace::Device(model) = info.color
-        && model_components(model) != format.samples_per_pixel()
+        && classify::components(model) != format.samples_per_pixel()
     {
         return Err(Skip::new(
             "JPX channels differ from the dictionary color space",
@@ -115,6 +120,108 @@ fn jbig2_globals(doc: &Document, parms: Option<&Dictionary>) -> Option<Vec<u8>> 
     s.decompressed_content_with_limit(MAX_DECODED_BYTES).ok()
 }
 
+// --------------------------------------------------------------- mapped
+
+/// Separation, DeviceN and Lab: read the samples at their stored depth
+/// and push every pixel through the space's mapping, one row at a time so
+/// only the output raster is held in full.
+fn decode_mapped(
+    doc: &Document,
+    stream: &Stream,
+    info: &ImageInfo,
+    source: &Object,
+) -> Result<Raster, Skip> {
+    let mapping = Mapping::build(doc, source)
+        .ok_or_else(|| Skip::new("tint transform or Lab dictionary does not parse"))?;
+    let n = mapping.components;
+    let (rows, bpc) = mapped_rows(stream, info, n)?;
+    let decode = info
+        .decode
+        .clone()
+        .unwrap_or_else(|| mapping.default_decode());
+    if decode.len() < 2 * n {
+        return Err(Skip::new("short Decode array"));
+    }
+    let mut memo = Memo::new(&mapping, decode, bpc);
+    let (w, h) = (info.width as usize, info.height as usize);
+    let mut out = Vec::with_capacity(w * h * classify::components(mapping.model));
+    let mut row = vec![0u16; w * n];
+    for y in 0..h {
+        rows.read(y, w * n, bpc, &mut row);
+        for px in row.chunks(n) {
+            let mapped = memo
+                .lookup(px)
+                .ok_or_else(|| Skip::new("tint transform failed on a sample"))?;
+            out.extend_from_slice(mapped);
+        }
+    }
+    Raster::new(info.width, info.height, device_format(mapping.model), out)
+        .ok_or_else(|| Skip::new("mapped sample count mismatch"))
+}
+
+/// The stored samples of a mapped image and their depth: packed at the
+/// dictionary's depth, or one byte per sample out of a JPEG.
+fn mapped_rows(stream: &Stream, info: &ImageInfo, n: usize) -> Result<(Rows, u8), Skip> {
+    match info.image_codec() {
+        None => {
+            let data = stream
+                .decompressed_content_with_limit(MAX_DECODED_BYTES)
+                .map_err(|e| Skip::new(format!("stream does not decode: {e}")))?;
+            let row_in = (info.width as usize * n * info.bpc as usize).div_ceil(8);
+            if data.len() < row_in * info.height as usize {
+                return Err(Skip::new("sample data is shorter than the image"));
+            }
+            Ok((Rows::Packed { data, row_in }, info.bpc))
+        }
+        Some("DCTDecode") => {
+            let model = match n {
+                1 => ColorModel::Gray,
+                3 => ColorModel::Rgb,
+                4 => ColorModel::Cmyk,
+                _ => return Err(Skip::new(format!("JPEG with {n} components"))),
+            };
+            Ok((Rows::Bytes(jpeg_raster(stream, info, model)?.data), 8))
+        }
+        Some(codec) => Err(Skip::new(format!("{codec} in a mapped color space"))),
+    }
+}
+
+fn device_format(model: ColorModel) -> Format {
+    match model {
+        ColorModel::Gray => Format::Gray8,
+        ColorModel::Rgb => Format::Rgb8,
+        ColorModel::Cmyk => Format::Cmyk8,
+    }
+}
+
+/// Where a mapped image's rows come from: packed samples at any depth, or
+/// one byte per sample from a codec.
+enum Rows {
+    Packed { data: Vec<u8>, row_in: usize },
+    Bytes(Vec<u8>),
+}
+
+impl Rows {
+    fn read(&self, y: usize, count: usize, bpc: u8, row: &mut [u16]) {
+        match self {
+            Rows::Packed { data, row_in } => {
+                let mut reader = BitReader {
+                    row: &data[y * row_in..(y + 1) * row_in],
+                    pos: 0,
+                };
+                for v in row.iter_mut().take(count) {
+                    *v = reader.read(u32::from(bpc)) as u16;
+                }
+            }
+            Rows::Bytes(data) => {
+                for (v, b) in row.iter_mut().zip(&data[y * count..(y + 1) * count]) {
+                    *v = u16::from(*b);
+                }
+            }
+        }
+    }
+}
+
 // -------------------------------------------------------------- samples
 
 fn decode_samples(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
@@ -123,8 +230,9 @@ fn decode_samples(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
         .map_err(|e| Skip::new(format!("stream does not decode: {e}")))?;
     let format = sample_format(info)?;
     let components = match info.color {
-        ColorSpace::Device(m) => model_components(m),
+        ColorSpace::Device(m) => classify::components(m),
         ColorSpace::Indexed { .. } => 1,
+        ColorSpace::Mapped { components, .. } => components,
         ColorSpace::Other(ref s) => return Err(Skip::new(format!("{s} color space"))),
     };
     let row_in = (info.width as usize * components * info.bpc as usize).div_ceil(8);
@@ -147,14 +255,6 @@ fn sample_format(info: &ImageInfo) -> Result<Format, Skip> {
         (ColorSpace::Device(ColorModel::Rgb), 1 | 2 | 4 | 8 | 16) => Ok(Format::Rgb8),
         (ColorSpace::Device(ColorModel::Cmyk), 1 | 2 | 4 | 8 | 16) => Ok(Format::Cmyk8),
         (_, bpc) => Err(Skip::new(format!("{bpc} bits per component"))),
-    }
-}
-
-fn model_components(m: ColorModel) -> usize {
-    match m {
-        ColorModel::Gray => 1,
-        ColorModel::Rgb => 3,
-        ColorModel::Cmyk => 4,
     }
 }
 
@@ -219,32 +319,58 @@ impl BitReader<'_> {
     }
 }
 
-/// Apply a `Decode` array. Only the identity and full inversion are
-/// handled; anything else is left to the reader untouched.
+/// Apply a `Decode` array. Bitonal images accept the identity and full
+/// inversion; indices are remapped over their stored depth; 8-bit device
+/// samples go through a per-component lookup table.
 fn apply_decode(mut raster: Raster, info: &ImageInfo) -> Result<Raster, Skip> {
     let Some(decode) = &info.decode else {
         return Ok(raster);
     };
     let n = raster.format.samples_per_pixel();
-    let identity: Vec<f32> = (0..n).flat_map(|_| [0.0, 1.0]).collect();
-    let inverted: Vec<f32> = (0..n).flat_map(|_| [1.0, 0.0]).collect();
-    if raster.format == Format::Indexed8 {
-        let identity_idx = decode.first() == Some(&0.0);
-        return if identity_idx && decode.len() == 2 {
-            Ok(raster)
-        } else {
-            Err(Skip::new("Decode array on indexed image"))
-        };
+    if decode.len() < 2 * n {
+        return Err(Skip::new("short Decode array"));
     }
-    if *decode == identity {
-        Ok(raster)
-    } else if *decode == inverted {
-        for b in &mut raster.data {
-            *b = !*b;
+    match raster.format {
+        Format::Gray1 => decode_bitonal(raster, decode),
+        Format::Indexed8 => {
+            let max = ((1u32 << info.bpc) - 1) as f32;
+            for b in &mut raster.data {
+                let idx = decode[0] + f32::from(*b) * (decode[1] - decode[0]) / max;
+                *b = idx.round().clamp(0.0, 255.0) as u8;
+            }
+            Ok(raster)
         }
-        Ok(raster)
-    } else {
-        Err(Skip::new("non-trivial Decode array"))
+        _ => {
+            let luts: Vec<[u8; 256]> = (0..n)
+                .map(|i| decode_lut(decode[2 * i], decode[2 * i + 1]))
+                .collect();
+            for (i, b) in raster.data.iter_mut().enumerate() {
+                *b = luts[i % n][*b as usize];
+            }
+            Ok(raster)
+        }
+    }
+}
+
+fn decode_lut(dmin: f32, dmax: f32) -> [u8; 256] {
+    let mut lut = [0u8; 256];
+    for (v, out) in lut.iter_mut().enumerate() {
+        let x = dmin + v as f32 / 255.0 * (dmax - dmin);
+        *out = (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    lut
+}
+
+fn decode_bitonal(mut raster: Raster, decode: &[f32]) -> Result<Raster, Skip> {
+    match (decode[0], decode[1]) {
+        (0.0, 1.0) => Ok(raster),
+        (1.0, 0.0) => {
+            for b in &mut raster.data {
+                *b = !*b;
+            }
+            Ok(raster)
+        }
+        _ => Err(Skip::new("fractional Decode array on a bitonal image")),
     }
 }
 
@@ -302,6 +428,11 @@ fn decode_jpeg(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
     let ColorSpace::Device(model) = info.color else {
         return Err(Skip::new("JPEG in an unsupported color space"));
     };
+    apply_decode(jpeg_raster(stream, info, model)?, info)
+}
+
+/// Decode the JPEG codestream into the raster format `model` implies.
+fn jpeg_raster(stream: &Stream, info: &ImageInfo, model: ColorModel) -> Result<Raster, Skip> {
     let data = codestream(stream, info)?;
     let options = DecoderOptions::new_safe()
         .set_max_width(1 << 16)
@@ -333,9 +464,7 @@ fn decode_jpeg(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
     if out == ZColor::YCCK {
         ycck_to_cmyk(&mut pixels);
     }
-    let raster =
-        Raster::new(w, h, format, pixels).ok_or_else(|| Skip::new("JPEG sample count mismatch"))?;
-    apply_decode(raster, info)
+    Raster::new(w, h, format, pixels).ok_or_else(|| Skip::new("JPEG sample count mismatch"))
 }
 
 /// Output color space to request from the decoder and the raster format
@@ -434,7 +563,55 @@ mod tests {
             vec![255, 0]
         );
         i.decode = Some(vec![0.2, 0.8]);
-        assert!(decode(&Document::with_version("1.5"), &stream, &i).is_err());
+        assert_eq!(
+            decode(&Document::with_version("1.5"), &stream, &i)
+                .unwrap()
+                .data,
+            vec![51, 204]
+        );
+    }
+
+    #[test]
+    fn indexed_decode_remaps_indices() {
+        let stream = Stream::new(dictionary! {}, vec![0b0011_0000]);
+        let mut i = info(
+            2,
+            1,
+            4,
+            ColorSpace::Indexed {
+                base: ColorModel::Rgb,
+                hival: 15,
+            },
+        );
+        i.decode = Some(vec![15.0, 0.0]);
+        let r = decode(&Document::with_version("1.5"), &stream, &i).unwrap();
+        assert_eq!(r.data, vec![12, 15]);
+    }
+
+    #[test]
+    fn separation_samples_land_in_the_alternate_space() {
+        let mut doc = Document::with_version("1.5");
+        let f = doc.add_object(Stream::new(
+            dictionary! { "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()],
+            "C0" => vec![1.into()], "C1" => vec![0.into()], "N" => 1 },
+            vec![],
+        ));
+        let source = Object::Array(vec![
+            "Separation".into(),
+            "Spot".into(),
+            "DeviceGray".into(),
+            f.into(),
+        ]);
+        let cs = ColorSpace::Mapped {
+            components: 1,
+            model: ColorModel::Gray,
+            source,
+        };
+        // 4-bit tints 0, 15, 8 -> gray 255, 0, 119.
+        let stream = Stream::new(dictionary! {}, vec![0x0F, 0x80]);
+        let r = decode(&doc, &stream, &info(3, 1, 4, cs)).unwrap();
+        assert_eq!(r.format, Format::Gray8);
+        assert_eq!(r.data, vec![255, 0, 119]);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use lopdf::{Dictionary, Object, dictionary};
 
 use super::decode::Skip;
 use super::encode::Encoded;
-use super::raster::{Format, Raster};
+use super::transform::{Format, Raster};
 
 /// Collects decoder callbacks into packed 1-bit rows.
 struct BitCollector {
