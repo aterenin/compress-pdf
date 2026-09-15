@@ -49,6 +49,7 @@ read-fonts = "0.44"         # cmap, post, CFF charset and encoding lookups
 
 # Used only by examples/ (the `cargo evals` tool) and tests.
 [dev-dependencies]
+hayro-font = "0.4"
 libtest-mimic = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

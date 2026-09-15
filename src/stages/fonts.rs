@@ -1,9 +1,10 @@
 //! Stage 3: fonts.
 //!
 //! In order: unembed the 14 standard fonts when the font's encoding is
-//! trustworthy without the program; subset embedded programs to the glyphs
-//! the content streams use, with glyph IDs retained. Each step is gated by
-//! its `Config` flag, and every embedded program gets one report row.
+//! trustworthy without the program; convert Type 1 programs to CFF; subset
+//! embedded programs to the glyphs the content streams use, with glyph IDs
+//! retained. Each step is gated by its `Config` flag, and every embedded
+//! program gets one report row.
 //!
 //! A program is subset only when every font dictionary that shares it was
 //! seen by the usage walk and could be analyzed; a font reachable from a
@@ -14,12 +15,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::Result;
-use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
 
 use crate::config::Config;
 use crate::font::cmap::CMap;
 use crate::font::glyphs::{self, Addressing, Base, CidToGid, Kind, SimpleEncoding};
-use crate::font::{std14, subset};
+use crate::font::{convert, std14, subset};
 use crate::pipeline::{Context, Stage};
 use crate::report::FontRow;
 use crate::stages::usage::TextUsage;
@@ -39,14 +40,22 @@ impl Stage for OptimizeFonts {
     }
 
     fn run(&self, doc: &mut Document, ctx: &mut Context<'_>) -> Result<()> {
+        // Rows are keyed by the font dictionary; a program shared by
+        // several fonts gets one row per font, which is what the reader
+        // sees in the file.
         let mut rows: HashMap<ObjectId, FontRow> = HashMap::new();
         for font in collect_fonts(doc) {
-            let row = rows.entry(font.program.id).or_insert_with(|| font.row());
+            let row = rows.entry(font.id).or_insert_with(|| font.row());
             if ctx.config.remove_standard_fonts
                 && let Some(canonical) = unembed_standard(doc, &font)
             {
                 row.action = format!("unembedded as {canonical}");
                 row.bytes_out = 0;
+            } else if ctx.config.convert_to_cff
+                && let Some(bytes) = convert_type1(doc, &font)
+            {
+                row.action = "converted to CFF".into();
+                row.bytes_out = bytes;
             }
         }
         if ctx.config.subset_fonts {
@@ -56,16 +65,29 @@ impl Stage for OptimizeFonts {
             };
             for (program, fonts) in by_program(collect_fonts(doc)) {
                 let outcome = subset_program(doc, program, &fonts, &seen);
-                if let Some(row) = rows.get_mut(&program.id) {
-                    row.action = outcome.action;
-                    row.bytes_out = outcome.bytes_out.unwrap_or(row.bytes_in);
-                }
+                record(&mut rows, &fonts, &outcome);
             }
         }
-        let mut rows: Vec<FontRow> = rows.into_values().collect();
-        rows.sort_by_key(|r| r.object);
+        let mut rows: Vec<(ObjectId, FontRow)> = rows.into_iter().collect();
+        rows.sort_by_key(|(id, _)| *id);
+        let rows = rows.into_iter().map(|(_, r)| r);
         ctx.report.fonts.extend(rows);
         Ok(())
+    }
+}
+
+/// Note a subsetting outcome on the rows of every font sharing the program.
+fn record(rows: &mut HashMap<ObjectId, FontRow>, fonts: &[Font], outcome: &Outcome) {
+    for font in fonts {
+        let Some(row) = rows.get_mut(&font.id) else {
+            continue;
+        };
+        let before = row.bytes_out;
+        row.action = match row.action.as_str() {
+            "converted to CFF" => format!("cff+{}", outcome.action),
+            _ => outcome.action.clone(),
+        };
+        row.bytes_out = outcome.bytes_out.unwrap_or(before);
     }
 }
 
@@ -220,6 +242,34 @@ fn unembed_standard(doc: &mut Document, font: &Font) -> Option<&'static str> {
     descriptor.set("FontName", name.clone());
     doc.get_dictionary_mut(font.id).ok()?.set("BaseFont", name);
     Some(canonical)
+}
+
+// ------------------------------------------------------------- convert
+
+/// Replace a Type 1 program (`FontFile`) by its CFF translation as
+/// `FontFile3`/`Type1C`, when that is smaller. Returns the stored size.
+fn convert_type1(doc: &mut Document, font: &Font) -> Option<usize> {
+    if font.program.key != "FontFile" || !matches!(font.subtype.as_slice(), b"Type1" | b"MMType1") {
+        return None;
+    }
+    let Ok(Object::Stream(stream)) = doc.get_object(font.program.id) else {
+        return None;
+    };
+    let data = stream.decompressed_content().ok()?;
+    let cff = convert::type1_to_cff(&data)?;
+    let compressed = deflate(&cff);
+    if compressed.len() >= stream.content.len() {
+        return None;
+    }
+    let size = compressed.len();
+    let new_id = doc.add_object(Stream::new(
+        dictionary! { "Subtype" => "Type1C", "Filter" => "FlateDecode" },
+        compressed,
+    ));
+    let descriptor = doc.get_dictionary_mut(font.descriptor).ok()?;
+    descriptor.remove(b"FontFile");
+    descriptor.set("FontFile3", new_id);
+    Some(size)
 }
 
 // -------------------------------------------------------------- subset
@@ -659,6 +709,41 @@ mod tests {
         );
         let out = stream.decompressed_content().unwrap();
         assert!(read_fonts::ps::cff::CffFontRef::new_cff(&out, 0, None).is_ok());
+    }
+
+    #[test]
+    fn type1_program_becomes_cff_and_is_then_subset() {
+        use crate::font::type1::tests::tiny_type1;
+        let mut doc = Document::with_version("1.5");
+        let mut padded = tiny_type1(false);
+        padded.extend(std::iter::repeat_n(b' ', 2000));
+        let program = doc.add_object(Stream::new(dictionary! { "Length1" => 10 }, padded));
+        let descriptor = doc.add_object(dictionary! {
+            "Type" => "FontDescriptor", "FontName" => "Tiny", "Flags" => 4, "FontFile" => program,
+        });
+        let font = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Tiny", "FontDescriptor" => descriptor,
+        });
+        doc.trailer.set("Root", font);
+        let mut usage = ImageUsage::default();
+        usage
+            .fonts
+            .entry(font)
+            .or_default()
+            .strings
+            .insert(b"A".to_vec());
+        let report = run(&mut doc, Preset::Standard, usage);
+        assert_eq!(report.fonts[0].action, "cff+subset to 2 glyphs");
+        let d = doc.get_dictionary(descriptor).unwrap();
+        assert!(!d.has(b"FontFile"));
+        let ff3 = d.get(b"FontFile3").unwrap().as_reference().unwrap();
+        let stream = doc.get_object(ff3).unwrap().as_stream().unwrap();
+        assert_eq!(
+            stream.dict.get(b"Subtype").unwrap().as_name().unwrap(),
+            b"Type1C"
+        );
+        let cff = stream.decompressed_content().unwrap();
+        assert!(read_fonts::ps::cff::CffFontRef::new_cff(&cff, 0, None).is_ok());
     }
 
     #[test]
