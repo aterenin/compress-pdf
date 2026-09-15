@@ -238,24 +238,34 @@ impl Outcome {
     }
 }
 
-/// Fonts the usage walk cannot see the use of: those in an AcroForm's
-/// default resources (used by default appearance strings) and those in
-/// the resources of Type 3 fonts (used by glyph procedures).
+/// Fonts the usage walk cannot see the use of: those a default appearance
+/// string (`/DA`, on the AcroForm or any field, widget or annotation)
+/// names in the AcroForm's default resources, and those in the resources
+/// of Type 3 fonts (used by glyph procedures).
 fn untouchable_fonts(doc: &Document) -> HashSet<ObjectId> {
     let mut out = HashSet::new();
-    let mut resource_dicts: Vec<&Dictionary> = Vec::new();
-    if let Ok(catalog) = doc.catalog()
-        && let Some(acro) = catalog
-            .get(b"AcroForm")
-            .ok()
-            .and_then(|a| deref(doc, a).as_dict().ok())
-        && let Some(dr) = acro
-            .get(b"DR")
-            .ok()
-            .and_then(|d| deref(doc, d).as_dict().ok())
+    let da_names = default_appearance_fonts(doc);
+    if let Some(dr_fonts) = doc
+        .catalog()
+        .ok()
+        .and_then(|c| deref(doc, c.get(b"AcroForm").ok()?).as_dict().ok())
+        .and_then(|acro| deref(doc, acro.get(b"DR").ok()?).as_dict().ok())
+        .and_then(|dr| deref(doc, dr.get(b"Font").ok()?).as_dict().ok())
     {
-        resource_dicts.push(dr);
+        for (name, value) in dr_fonts.iter() {
+            if da_names.contains(name)
+                && let Ok(id) = value.as_reference()
+            {
+                out.insert(id);
+            }
+        }
     }
+    out.extend(type3_resource_fonts(doc));
+    out
+}
+
+fn type3_resource_fonts(doc: &Document) -> Vec<ObjectId> {
+    let mut out = Vec::new();
     for obj in doc.objects.values() {
         let Object::Dictionary(d) = obj else {
             continue;
@@ -265,20 +275,48 @@ fn untouchable_fonts(doc: &Document) -> HashSet<ObjectId> {
                 .get(b"Resources")
                 .ok()
                 .and_then(|r| deref(doc, r).as_dict().ok())
-        {
-            resource_dicts.push(res);
-        }
-    }
-    for res in resource_dicts {
-        if let Some(fonts) = res
-            .get(b"Font")
-            .ok()
-            .and_then(|f| deref(doc, f).as_dict().ok())
+            && let Some(fonts) = res
+                .get(b"Font")
+                .ok()
+                .and_then(|f| deref(doc, f).as_dict().ok())
         {
             out.extend(fonts.iter().filter_map(|(_, v)| v.as_reference().ok()));
         }
     }
     out
+}
+
+/// Resource names selected with `Tf` in any default appearance string.
+fn default_appearance_fonts(doc: &Document) -> HashSet<Vec<u8>> {
+    let mut names = HashSet::new();
+    let mut strings: Vec<&[u8]> = Vec::new();
+    if let Ok(catalog) = doc.catalog()
+        && let Some(acro) = catalog
+            .get(b"AcroForm")
+            .ok()
+            .and_then(|a| deref(doc, a).as_dict().ok())
+        && let Ok(Object::String(da, _)) = acro.get(b"DA")
+    {
+        strings.push(da);
+    }
+    for obj in doc.objects.values() {
+        if let Object::Dictionary(d) = obj
+            && let Ok(Object::String(da, _)) = d.get(b"DA")
+        {
+            strings.push(da);
+        }
+    }
+    for da in strings {
+        let tokens: Vec<&[u8]> = da.split(|b| b.is_ascii_whitespace()).collect();
+        for pair in tokens.windows(3) {
+            if pair[2] == b"Tf"
+                && let Some(name) = pair[0].strip_prefix(b"/")
+            {
+                names.insert(name.to_vec());
+            }
+        }
+    }
+    names
 }
 
 /// What the usage walk learned, and what it could not see.
@@ -626,9 +664,14 @@ mod tests {
     #[test]
     fn form_field_fonts_are_untouchable() {
         let (mut doc, font, _) = doc_with_font("ArialNarrow", 32);
+        let field = doc.add_object(dictionary! { "T" => Object::string_literal("name"),
+        "DA" => Object::string_literal("/F1 12 Tf 0 g") });
         let catalog = doc.add_object(dictionary! {
             "Type" => "Catalog",
-            "AcroForm" => dictionary! { "DR" => dictionary! { "Font" => dictionary! { "F1" => font } } },
+            "AcroForm" => dictionary! {
+                "Fields" => vec![field.into()],
+                "DR" => dictionary! { "Font" => dictionary! { "F1" => font, "F2" => font } },
+            },
         });
         doc.trailer.set("Root", catalog);
         let mut usage = ImageUsage::default();
@@ -643,5 +686,27 @@ mod tests {
             report.fonts[0].action,
             "kept: used by form fields or Type 3 glyphs"
         );
+    }
+
+    #[test]
+    fn default_resource_fonts_no_appearance_names_are_fair_game() {
+        let (mut doc, font, _) = doc_with_font("ArialNarrow", 32);
+        let catalog = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "AcroForm" => dictionary! { "DA" => Object::string_literal("/Helv 0 Tf 0 g"),
+                "DR" => dictionary! { "Font" => dictionary! { "F1" => font } } },
+        });
+        doc.trailer.set("Root", catalog);
+        let mut usage = ImageUsage::default();
+        usage
+            .fonts
+            .entry(font)
+            .or_default()
+            .strings
+            .insert(b"A".to_vec());
+        let report = run(&mut doc, Preset::Standard, usage);
+        // The program is junk, so the subsetter cannot parse it; what
+        // matters is that the AcroForm rule no longer stops it.
+        assert_eq!(report.fonts[0].action, "kept: program does not parse");
     }
 }
