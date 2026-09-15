@@ -61,7 +61,7 @@ through Rust bindings.
 
 | Technique | What it does | Applies to | Library |
 |---|---|---|---|
-| Image decoding | Turn any PDF image stream into a raster so the techniques below can act on it: raw and Flate samples at 1, 2, 4, 8 and 16 bits, `Decode` arrays, PNG and TIFF predictors, every color space (Device*, ICCBased, Indexed, Lab, CalRGB/CalGray, Separation, DeviceN with their tint-transform functions), and every filter (DCT, JPX, CCITT G3/G4, JBIG2, LZW, RunLength, ASCII85/Hex). | every image | `image` and `zune-jpeg` (Rust) for DCT, `jpeg2k` over OpenJPEG (C) for JPX, `fax` (Rust) for CCITT, `hayro-jbig2` (Rust) for JBIG2; own for sample unpacking, color spaces, and PDF function evaluation |
+| Image decoding | Turn any PDF image stream into a raster so the techniques below can act on it: raw and Flate samples at 1, 2, 4, 8 and 16 bits, `Decode` arrays, PNG and TIFF predictors, every color space (Device*, ICCBased, Indexed, Lab, CalRGB/CalGray, Separation, DeviceN with their tint-transform functions), and every filter (DCT, JPX, CCITT G3/G4, JBIG2, LZW, RunLength, ASCII85/Hex). | every image | `image` and `zune-jpeg` (Rust) for DCT, `hayro-jpeg2000` (Rust) for JPX, `hayro-ccitt` (Rust) for CCITT input and `fax` (Rust) for G4 output, `hayro-jbig2` (Rust) for JBIG2, all three already compiled in through `hayro-syntax`; own for sample unpacking, color spaces, and PDF function evaluation |
 | Downsampling | Resample an image to a target resolution when its effective resolution on the page exceeds a threshold. Effective resolution comes from the rendered size of every placement. | bitonal, gray, color images, and their masks | `fast_image_resize` (Rust); placement analysis is own code over lopdf's content-stream parser |
 | Image clipping | Crop an image to the bounding box, in image space, of the union of the clip regions in effect at each of its placements, so pixels that can never be visible are discarded before re-encoding. Pixels inside the box but outside a non-rectangular path are kept. Pre-blended images (`/Matte`) are not clipped. Clipping implies resource optimization, since the cropped image is a new object. | every image with a clip narrower than its placement | own; clip tracking is part of the placement analysis |
 | Lossy re-encoding | Re-encode continuous-tone images as JPEG at a preset quality. | gray and color images | `mozjpeg` (C) |
@@ -361,9 +361,11 @@ PDF/A conformance preservation.
   without error; it cannot load 11 of 4,368 corpus files and hangs on one.
   Revisit if repair of damaged files becomes a goal; the `Stage` trait would
   not change.
-- JPX decoding uses OpenJPEG (C) as the most mature option. A pure-Rust
-  JPEG 2000 decoder (`pdfboss-jpx`) appeared in 2026; revisit once it has a
-  track record, since it would make the build C-free apart from mozjpeg.
+- JPX decoding uses `hayro-jpeg2000` (pure Rust), which arrives with
+  `hayro-syntax` and is exercised on every image the verify step checks. It
+  decoded all 51 JPX-bearing corpus files without regressions. With this the
+  only C dependency is mozjpeg. Revisit if a corpus file exposes a codestream
+  feature it lacks; OpenJPEG through bindings is the fallback.
 - CFF writing: `write-fonts` 0.53 ships `ps::cff::v2` with only `Cff2Header`
   and `Index` (CFF2 container primitives); its generated CFF v1 types are not
   compiled into the crate, and neither version has dict or charstring
