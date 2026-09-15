@@ -153,6 +153,67 @@ pub fn icc_to_rgb(raster: &Raster, profile: &[u8]) -> Option<Raster> {
     Raster::new(raster.width, raster.height, Format::Rgb8, out)
 }
 
+// ------------------------------------------------------------- crop
+
+/// A pixel rectangle: left, top, width, height (rows counted from the top).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Pixel rectangle covering the unit-square fraction `x0..x1` by `y0..y1`
+/// (PDF image space, y up) of a `width` x `height` image, rounded outward so
+/// nothing visible is lost. `None` when it would keep the whole image or
+/// nothing at all.
+pub fn crop_pixels(width: u32, height: u32, unit: [f32; 4]) -> Option<PixelRect> {
+    let [x0, y0, x1, y1] = unit;
+    let left = (x0.max(0.0) * width as f32).floor() as u32;
+    let right = ((x1.min(1.0) * width as f32).ceil() as u32).min(width);
+    let top = ((1.0 - y1.min(1.0)) * height as f32).floor() as u32;
+    let bottom = (((1.0 - y0.max(0.0)) * height as f32).ceil() as u32).min(height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let rect = PixelRect {
+        x: left,
+        y: top,
+        w: right - left,
+        h: bottom - top,
+    };
+    (rect.w < width || rect.h < height).then_some(rect)
+}
+
+/// The unit-square rectangle a pixel rectangle covers, for the wrapper form.
+pub fn unit_of(width: u32, height: u32, r: PixelRect) -> [f32; 4] {
+    let (w, h) = (width as f32, height as f32);
+    [
+        r.x as f32 / w,
+        1.0 - (r.y + r.h) as f32 / h,
+        (r.x + r.w) as f32 / w,
+        1.0 - r.y as f32 / h,
+    ]
+}
+
+pub fn crop(raster: &Raster, r: PixelRect) -> Option<Raster> {
+    if r.x + r.w > raster.width || r.y + r.h > raster.height {
+        return None;
+    }
+    if raster.format == Format::Gray1 {
+        return crop(&raster.gray1_to_gray8(), r).map(|g| g.gray8_to_gray1());
+    }
+    let n = raster.format.samples_per_pixel();
+    let stride = raster.format.row_bytes(raster.width);
+    let mut out = Vec::with_capacity(r.w as usize * r.h as usize * n);
+    for row in r.y..r.y + r.h {
+        let start = row as usize * stride + r.x as usize * n;
+        out.extend_from_slice(&raster.data[start..start + r.w as usize * n]);
+    }
+    Raster::new(r.w, r.h, raster.format, out)
+}
+
 // ------------------------------------------------------- complexity
 
 /// Color complexity reduction: a flat image becomes one pixel; RGB or CMYK
@@ -262,6 +323,56 @@ mod tests {
         // Nothing applies to a real color image.
         let color = Raster::new(2, 1, Format::Rgb8, vec![1, 2, 3, 4, 5, 6]).unwrap();
         assert!(reduce(&color).is_none());
+    }
+
+    #[test]
+    fn crop_rounds_outward_and_maps_back() {
+        // Bottom-left quarter of a 10x10 image is rows 5..10, columns 0..5.
+        let r = crop_pixels(10, 10, [0.0, 0.0, 0.5, 0.5]).unwrap();
+        assert_eq!(
+            r,
+            PixelRect {
+                x: 0,
+                y: 5,
+                w: 5,
+                h: 5
+            }
+        );
+        assert_eq!(unit_of(10, 10, r), [0.0, 0.0, 0.5, 0.5]);
+        // Fractions round outward.
+        let r = crop_pixels(10, 10, [0.31, 0.0, 0.69, 1.0]).unwrap();
+        assert_eq!((r.x, r.w), (3, 4));
+        assert!(crop_pixels(10, 10, [0.0, 0.0, 1.0, 1.0]).is_none());
+        assert!(crop_pixels(10, 10, [0.5, 0.5, 0.5, 0.5]).is_none());
+    }
+
+    #[test]
+    fn crop_extracts_the_window() {
+        let data: Vec<u8> = (0..16).collect();
+        let r = Raster::new(4, 4, Format::Gray8, data).unwrap();
+        let c = crop(
+            &r,
+            PixelRect {
+                x: 1,
+                y: 2,
+                w: 2,
+                h: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(c.data, vec![9, 10, 13, 14]);
+        let bits = Raster::new(8, 2, Format::Gray1, vec![0b1010_1010, 0b0101_0101]).unwrap();
+        let c = crop(
+            &bits,
+            PixelRect {
+                x: 1,
+                y: 0,
+                w: 3,
+                h: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(c.data, vec![0b0100_0000, 0b1010_0000]);
     }
 
     #[test]

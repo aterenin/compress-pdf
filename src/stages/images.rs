@@ -25,7 +25,7 @@ mod transform;
 use std::collections::HashSet;
 
 use anyhow::Result;
-use lopdf::{Document, Object, ObjectId, Stream};
+use lopdf::{Document, Object, ObjectId, Stream, dictionary};
 
 use crate::config::{Codecs, ColorConversion, Config, Dpi};
 use crate::pipeline::{Context, Stage};
@@ -129,12 +129,19 @@ fn process_image(doc: &mut Document, id: ObjectId, ctx: &mut Context<'_>) {
                 } else {
                     None
                 };
+                let crop = ctx
+                    .usage
+                    .by_object
+                    .get(&id)
+                    .and_then(|u| u.crop_box())
+                    .map(|r| [r.x0, r.y0, r.x1, r.y1]);
                 let task = Task {
                     id,
                     stream: &stream,
                     info,
                     config: ctx.config,
                     dpi: row.effective_dpi,
+                    crop,
                 };
                 let mut outcome = attempt(doc, task);
                 if let Some(note) = mask_note {
@@ -157,6 +164,8 @@ struct Task<'a> {
     info: ImageInfo,
     config: &'a Config,
     dpi: Option<f32>,
+    /// Visible fraction of the unit square, when clipping applies.
+    crop: Option<[f32; 4]>,
 }
 
 fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
@@ -171,12 +180,17 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
         return Outcome::kept("source is smaller");
     }
     let (w, h) = (prepared.raster.width, prepared.raster.height);
-    if prepared.resized && !resize_masks(doc, task.id, w, h) {
+    if (prepared.resized || prepared.crop.is_some())
+        && !resize_masks(doc, task.id, prepared.crop, (w, h))
+    {
         return Outcome::kept("mask could not be resized");
     }
     write_back(doc, task.id, &prepared.raster, &best);
     if prepared.converted || prepared.reduced {
         set_color_space(doc, task.id, prepared.raster.format);
+    }
+    if let Some(unit) = prepared.crop {
+        wrap_in_form(doc, task.id, unit);
     }
     Outcome {
         action: prepared.action_label(),
@@ -189,6 +203,8 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
 struct Prepared {
     raster: Raster,
     reduced: bool,
+    /// Unit-square rectangle the raster now covers, when it was cropped.
+    crop: Option<[f32; 4]>,
     resized: bool,
     converted: bool,
 }
@@ -202,6 +218,7 @@ fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
         },
         false => (raster, false),
     };
+    let (raster, crop) = crop_step(raster, task);
     let target = downsample_target(&raster, &task.info, task.config, task.dpi);
     let (raster, resized) = match target.and_then(|(w, h)| transform::downsample(&raster, w, h)) {
         Some(small) => (small, true),
@@ -214,9 +231,68 @@ fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
     Ok(Prepared {
         raster,
         reduced,
+        crop,
         resized,
         converted,
     })
+}
+
+/// Apply the crop box when one applies; the unit-square rectangle the
+/// result covers comes back with it.
+fn crop_step(raster: Raster, task: &Task<'_>) -> (Raster, Option<[f32; 4]>) {
+    let cropped = crop_target(&raster, task).and_then(|px| {
+        let unit = transform::unit_of(raster.width, raster.height, px);
+        transform::crop(&raster, px).map(|c| (c, unit))
+    });
+    match cropped {
+        Some((c, unit)) => (c, Some(unit)),
+        None => (raster, None),
+    }
+}
+
+/// Bytes a wrapper form adds to the file: its dictionary, the one-line
+/// content, the stream framing, and a cross-reference entry.
+const FORM_OVERHEAD: u64 = 200;
+
+/// Crop only when the preset asks and the crop is expected to save more
+/// than the wrapper form costs, estimated as the invisible fraction of the
+/// bytes currently in the file. Color-key masks survive cropping unchanged
+/// because they act per sample; soft masks with a `Matte` are refused by
+/// the mask code.
+fn crop_target(raster: &Raster, task: &Task<'_>) -> Option<transform::PixelRect> {
+    if !task.config.clip_images {
+        return None;
+    }
+    let px = transform::crop_pixels(raster.width, raster.height, task.crop?)?;
+    let kept = u64::from(px.w) * u64::from(px.h);
+    let total = u64::from(raster.width) * u64::from(raster.height);
+    let source = task.stream.content.len() as u64;
+    let saved = source * (total - kept) / total;
+    (saved > FORM_OVERHEAD).then_some(px)
+}
+
+/// Replace the image object by a form that draws the cropped image into
+/// the unit-square rectangle `unit`, so every existing placement still
+/// shows the visible part where it was. The image moves to a new object.
+fn wrap_in_form(doc: &mut Document, id: ObjectId, unit: [f32; 4]) {
+    let Some(image) = doc.objects.remove(&id) else {
+        return;
+    };
+    let image_id = doc.add_object(image);
+    let [x0, y0, x1, y1] = unit;
+    let content = format!("q {} 0 0 {} {} {} cm /Im Do Q", x1 - x0, y1 - y0, x0, y0);
+    let form = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![x0.into(), y0.into(), x1.into(), y1.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! { "Im" => image_id },
+            },
+        },
+        content.into_bytes(),
+    );
+    doc.objects.insert(id, Object::Stream(form));
 }
 
 /// Complexity reduction applies to plain device color spaces only: an ICC
@@ -237,6 +313,7 @@ fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
     if !prepared.resized
         && !prepared.converted
         && !prepared.reduced
+        && prepared.crop.is_none()
         && task.info.image_codec() == Some("DCTDecode")
     {
         // The stored JPEG without any wrapper filters: lossless and often
@@ -250,6 +327,7 @@ impl Prepared {
     fn action_label(&self) -> String {
         let steps: Vec<&str> = [
             (self.reduced, "reduced"),
+            (self.crop.is_some(), "clipped"),
             (self.resized, "downsampled"),
             (self.converted, "rgb"),
         ]
@@ -459,9 +537,40 @@ fn simplify_soft_mask(doc: &mut Document, parent_id: ObjectId) -> Option<&'stati
     Some("smask-to-stencil")
 }
 
-/// Bring the parent's masks to `width` x `height` after the parent was
-/// downsampled. Returns false when a mask exists but cannot be handled.
-fn resize_masks(doc: &mut Document, parent_id: ObjectId, width: u32, height: u32) -> bool {
+/// Decode a mask and bring it to the parent's crop and size. A mask with a
+/// `Matte` is pre-blended against its parent's edges, so it is not cropped.
+fn mask_raster(
+    doc: &Document,
+    mask: &Stream,
+    crop: Option<[f32; 4]>,
+    size: (u32, u32),
+) -> Option<Raster> {
+    if mask.dict.has(b"Matte") && crop.is_some() {
+        return None;
+    }
+    let info = classify::read_info(doc, &mask.dict)?;
+    let raster = decode::decode(doc, mask, &info).ok()?;
+    let cropped = match crop.and_then(|u| transform::crop_pixels(raster.width, raster.height, u)) {
+        Some(px) => transform::crop(&raster, px)?,
+        None => raster,
+    };
+    if (cropped.width, cropped.height) == size {
+        Some(cropped)
+    } else {
+        transform::downsample(&cropped, size.0, size.1)
+    }
+}
+
+/// Bring the parent's masks in line after the parent was cropped to the
+/// unit-square rectangle `crop` and/or resized to `size`. A mask may have
+/// its own dimensions, so the crop is recomputed per mask. Returns false
+/// when a mask exists but cannot be handled.
+fn resize_masks(
+    doc: &mut Document,
+    parent_id: ObjectId,
+    crop: Option<[f32; 4]>,
+    size: (u32, u32),
+) -> bool {
     let parent = match doc.get_object(parent_id) {
         Ok(Object::Stream(s)) => s.dict.clone(),
         _ => return false,
@@ -470,22 +579,24 @@ fn resize_masks(doc: &mut Document, parent_id: ObjectId, width: u32, height: u32
         let Ok(Object::Reference(mask_id)) = parent.get(key) else {
             continue;
         };
-        if !resize_one(doc, *mask_id, width, height) {
+        if !resize_one(doc, *mask_id, crop, size) {
             return false;
         }
     }
     true
 }
 
-fn resize_one(doc: &mut Document, mask_id: ObjectId, width: u32, height: u32) -> bool {
+fn resize_one(
+    doc: &mut Document,
+    mask_id: ObjectId,
+    crop: Option<[f32; 4]>,
+    size: (u32, u32),
+) -> bool {
     let Ok(Object::Stream(mask)) = doc.get_object(mask_id) else {
         return false;
     };
     let mask = mask.clone();
-    let Some(small) = classify::read_info(doc, &mask.dict)
-        .and_then(|info| decode::decode(doc, &mask, &info).ok())
-        .and_then(|raster| transform::downsample(&raster, width, height))
-    else {
+    let Some(small) = mask_raster(doc, &mask, crop, size) else {
         return false;
     };
     let best = match small.format {
@@ -581,5 +692,102 @@ mod mask_tests {
     fn graded_soft_mask_is_left_alone() {
         let (mut doc, parent, _) = doc_with_mask(vec![0, 100, 200, 255]);
         assert_eq!(simplify_soft_mask(&mut doc, parent), None);
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use lopdf::{Stream, dictionary};
+
+    use super::*;
+    use crate::config::Preset;
+    use crate::report::Report;
+    use crate::stages::usage::{AnalyzeUsage, ImageUsage};
+
+    /// One page with a 40x40 gray image drawn at 100x100 pt, clipped to the
+    /// lower-left quarter. The pixels are a gradient so cropping is visible.
+    fn clipped_doc() -> (Document, ObjectId) {
+        let mut doc = Document::with_version("1.5");
+        let pixels: Vec<u8> = (0..40 * 40).map(|i| (i % 251) as u8).collect();
+        let image = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Image", "Width" => 40, "Height" => 40,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8 },
+            pixels,
+        ));
+        let contents = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 0 0 50 50 re W n 100 0 0 100 0 0 cm /Im1 Do Q".to_vec(),
+        ));
+        let pages_id = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => contents,
+            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
+            "Resources" => dictionary! { "XObject" => dictionary! { "Im1" => image } },
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        (doc, image)
+    }
+
+    fn run(doc: &mut Document, preset: Preset) -> Report {
+        let config = Config::preset(preset);
+        let mut report = Report::new(0);
+        let mut ctx = Context {
+            config: &config,
+            report: &mut report,
+            usage: ImageUsage::default(),
+        };
+        AnalyzeUsage.run(doc, &mut ctx).unwrap();
+        RecompressImages.run(doc, &mut ctx).unwrap();
+        report
+    }
+
+    #[test]
+    fn clipped_image_is_cropped_behind_a_form() {
+        let (mut doc, image) = clipped_doc();
+        run(&mut doc, Preset::Standard);
+        let form = doc.get_object(image).unwrap().as_stream().unwrap();
+        assert_eq!(
+            form.dict.get(b"Subtype").unwrap().as_name().unwrap(),
+            b"Form"
+        );
+        let bbox: Vec<f32> = form
+            .dict
+            .get(b"BBox")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o.as_float().unwrap())
+            .collect();
+        assert_eq!(bbox, vec![0.0, 0.0, 0.5, 0.5]);
+        assert_eq!(form.content, b"q 0.5 0 0 0.5 0 0 cm /Im Do Q");
+        let inner = form.dict.get(b"Resources").unwrap().as_dict().unwrap();
+        let inner = inner.get(b"XObject").unwrap().as_dict().unwrap();
+        let inner = inner.get(b"Im").unwrap().as_reference().unwrap();
+        let inner = doc.get_object(inner).unwrap().as_stream().unwrap();
+        assert_eq!(inner.dict.get(b"Width").unwrap().as_i64().unwrap(), 20);
+        assert_eq!(inner.dict.get(b"Height").unwrap().as_i64().unwrap(), 20);
+        // Bottom-left quarter: rows 20..40, columns 0..20 of the gradient.
+        let info = classify::read_info(&doc, &inner.dict).unwrap();
+        let raster = decode::decode(&doc, inner, &info).unwrap();
+        assert_eq!(raster.data[0], ((20 * 40) % 251) as u8);
+    }
+
+    #[test]
+    fn less_preset_does_not_clip() {
+        let (mut doc, image) = clipped_doc();
+        run(&mut doc, Preset::Less);
+        let stream = doc.get_object(image).unwrap().as_stream().unwrap();
+        assert_eq!(
+            stream.dict.get(b"Subtype").unwrap().as_name().unwrap(),
+            b"Image"
+        );
     }
 }

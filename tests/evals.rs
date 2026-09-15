@@ -173,13 +173,15 @@ fn parse_preset(s: &str) -> Preset {
 // ------------------------------------------------------------- one trial
 
 /// Per-trial wall-clock limit. A file that exceeds it is a failure in its
-/// own right (rule: pathological inputs must not hang the tool). Override
-/// with `EVALS_TIMEOUT_SECS`.
+/// own right (rule: pathological inputs must not hang the tool). Trials run
+/// in parallel, so the limit is generous: the largest corpus files (tens of
+/// megabytes of JPX images) take close to a minute alone. Override with
+/// `EVALS_TIMEOUT_SECS`.
 fn trial_timeout() -> Duration {
     let secs = env::var("EVALS_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(60);
+        .unwrap_or(180);
     Duration::from_secs(secs)
 }
 
