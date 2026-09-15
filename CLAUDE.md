@@ -452,13 +452,22 @@ clip safely.
 Present: `evals.toml` with the three sources pinned, and `examples/evals.rs`
 behind the `cargo evals` alias with `fetch` (shallow sparse clones, pdf.js
 link resolution with recorded failures, manifest) and `status` working;
-`score` and `probes` are stubs that exit with "not implemented". A full
+`probes` writes the synthetic documents; `score` is a stub that exits with
+"not implemented". A full
 fetch takes about five minutes and 1.1 GB; re-running retries only failed
 links. `evals.toml` defines the `quick` subset (26 files, 4.7 MB, every
 handled feature at least twice plus seven realistic documents) and an empty
 `scoring` subset; `status` reports each subset's presence on disk.
 
+Present: `tests/probes.rs` with its generators in
+`tests/probes/generators.rs` (fifteen one-variable documents: CMYK, gray
+RGB, bitonal, indexed, JPEG, clipped, opaque soft mask, Lab, duplicate and
+unused resources, a partly used Type 1 font, an embedded Arial, metadata
+and thumbnail, AcroForm default resources with and without XFA), each
+asserted against the presets' stated behavior and all run through every
+preset with the structural verifier; `cargo evals probes <dir>` writes the
+same files with a README listing them.
+
 Not yet present: the visual level of `verify` (`hayro` rendering and SSIM),
-`tests/probes.rs` and its generators,
-`tests/evals.rs` with `libtest-mimic`, `evals-expectations.toml`, the
-`score` and `probes` subcommands, and the rasterize-and-compare check.
+the `score` subcommand, and the rasterize-and-compare check in the
+corpus harness.

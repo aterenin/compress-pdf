@@ -1,6 +1,6 @@
 //! `cargo evals <subcommand>`: evaluation tooling (see CLAUDE.md, "Evals tooling").
 //!
-//! Implemented: `fetch`, `status`. Stubs: `score`, `probes`.
+//! Implemented: `fetch`, `status`, `probes`. Stub: `score`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+
+#[path = "../tests/probes/generators.rs"]
+mod generators;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -104,8 +107,12 @@ enum Cmd {
     Status,
     /// Size comparison against reference outputs (not implemented yet).
     Score,
-    /// Write the synthetic probe PDFs (not implemented yet).
-    Probes,
+    /// Write the synthetic probe PDFs to a directory, one per probe, for
+    /// running through a reference tool.
+    Probes {
+        /// Output directory (created if needed).
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -113,8 +120,37 @@ fn main() -> Result<()> {
         Cmd::Fetch { name } => fetch(name.as_deref()),
         Cmd::Status => status(),
         Cmd::Score => bail!("`score` is not implemented yet"),
-        Cmd::Probes => bail!("`probes` is not implemented yet"),
+        Cmd::Probes { out } => probes(&out),
     }
+}
+
+// ---------------------------------------------------------------- probes
+
+fn probes(out: &Path) -> Result<()> {
+    fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let mut index = String::from(
+        "# Probes\n\nOne variable each; see tests/probes.rs for the expected behavior.\n\n",
+    );
+    for probe in generators::all() {
+        let mut doc = probe.doc;
+        let bytes = generators::to_bytes(&mut doc);
+        let path = out.join(format!("{}.pdf", probe.name));
+        fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+        index.push_str(&format!(
+            "- `{}.pdf`: {} ({} bytes)\n",
+            probe.name,
+            probe.about,
+            bytes.len()
+        ));
+        println!(
+            "{:<28} {:>8} bytes  {}",
+            probe.name,
+            bytes.len(),
+            probe.about
+        );
+    }
+    fs::write(out.join("README.md"), index)?;
+    Ok(())
 }
 
 // ----------------------------------------------------------------- fetch
