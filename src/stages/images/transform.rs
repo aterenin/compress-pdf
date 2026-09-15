@@ -153,6 +153,73 @@ pub fn icc_to_rgb(raster: &Raster, profile: &[u8]) -> Option<Raster> {
     Raster::new(raster.width, raster.height, Format::Rgb8, out)
 }
 
+// ------------------------------------------------------- complexity
+
+/// Color complexity reduction: a flat image becomes one pixel; RGB or CMYK
+/// whose pixels are all gray becomes gray; gray with only black and white
+/// becomes bitonal. Returns `None` when nothing applies.
+pub fn reduce(raster: &Raster) -> Option<Raster> {
+    let mut current = raster.clone();
+    let mut changed = false;
+    for step in [flatten, gray_if_gray, bitonal_if_two_level] {
+        if let Some(next) = step(&current) {
+            current = next;
+            changed = true;
+        }
+    }
+    changed.then_some(current)
+}
+
+fn flatten(raster: &Raster) -> Option<Raster> {
+    if raster.width as u64 * raster.height as u64 <= 1 {
+        return None;
+    }
+    let unpacked = if raster.format == Format::Gray1 {
+        raster.gray1_to_gray8()
+    } else {
+        raster.clone()
+    };
+    let n = unpacked.format.samples_per_pixel();
+    let first = &unpacked.data[..n];
+    if !unpacked.data.chunks(n).all(|px| px == first) {
+        return None;
+    }
+    let one = Raster::new(1, 1, unpacked.format, first.to_vec())?;
+    Some(if raster.format == Format::Gray1 {
+        one.gray8_to_gray1()
+    } else {
+        one
+    })
+}
+
+fn gray_if_gray(raster: &Raster) -> Option<Raster> {
+    let data: Vec<u8> = match raster.format {
+        Format::Rgb8 => {
+            let px = raster.data.as_chunks::<3>().0;
+            if !px.iter().all(|p| p[0] == p[1] && p[1] == p[2]) {
+                return None;
+            }
+            px.iter().map(|p| p[0]).collect()
+        }
+        Format::Cmyk8 => {
+            let px = raster.data.as_chunks::<4>().0;
+            if !px.iter().all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0) {
+                return None;
+            }
+            px.iter().map(|p| 255 - p[3]).collect()
+        }
+        _ => return None,
+    };
+    Raster::new(raster.width, raster.height, Format::Gray8, data)
+}
+
+fn bitonal_if_two_level(raster: &Raster) -> Option<Raster> {
+    if raster.format != Format::Gray8 || !raster.data.iter().all(|&v| v == 0 || v == 255) {
+        return None;
+    }
+    Some(raster.gray8_to_gray1())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +240,28 @@ mod tests {
         let d = downsample(&r, 4, 1).unwrap();
         assert_eq!(d.format, Format::Gray1);
         assert_eq!(d.data, vec![0xF0]);
+    }
+
+    #[test]
+    fn reduction_rules() {
+        // Gray RGB becomes gray, then two-level gray becomes bitonal.
+        let rgb = Raster::new(2, 1, Format::Rgb8, vec![0, 0, 0, 255, 255, 255]).unwrap();
+        let out = reduce(&rgb).unwrap();
+        assert_eq!(out.format, Format::Gray1);
+        assert_eq!(out.data, vec![0b0100_0000]);
+        // K-only CMYK becomes gray.
+        let cmyk = Raster::new(1, 1, Format::Cmyk8, vec![0, 0, 0, 55]).unwrap();
+        assert_eq!(reduce(&cmyk).unwrap().data, vec![200]);
+        // Flat color image collapses to one pixel.
+        let flat = Raster::new(4, 4, Format::Rgb8, [10u8, 20, 30].repeat(16)).unwrap();
+        let out = reduce(&flat).unwrap();
+        assert_eq!(
+            (out.width, out.height, out.data.as_slice()),
+            (1, 1, &[10u8, 20, 30][..])
+        );
+        // Nothing applies to a real color image.
+        let color = Raster::new(2, 1, Format::Rgb8, vec![1, 2, 3, 4, 5, 6]).unwrap();
+        assert!(reduce(&color).is_none());
     }
 
     #[test]

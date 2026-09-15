@@ -124,6 +124,11 @@ fn process_image(doc: &mut Document, id: ObjectId, ctx: &mut Context<'_>) {
             if codecs.is_empty() {
                 Outcome::kept("class excluded")
             } else {
+                let mask_note = if ctx.config.reduce_color_complexity {
+                    simplify_soft_mask(doc, id)
+                } else {
+                    None
+                };
                 let task = Task {
                     id,
                     stream: &stream,
@@ -131,7 +136,11 @@ fn process_image(doc: &mut Document, id: ObjectId, ctx: &mut Context<'_>) {
                     config: ctx.config,
                     dpi: row.effective_dpi,
                 };
-                attempt(doc, task)
+                let mut outcome = attempt(doc, task);
+                if let Some(note) = mask_note {
+                    outcome.action = format!("{}+{note}", outcome.action);
+                }
+                outcome
             }
         }
     };
@@ -162,15 +171,15 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
         return Outcome::kept("source is smaller");
     }
     let (w, h) = (prepared.raster.width, prepared.raster.height);
-    if prepared.resized && !resize_soft_mask(doc, task.stream, w, h) {
-        return Outcome::kept("soft mask could not be resized");
+    if prepared.resized && !resize_masks(doc, task.id, w, h) {
+        return Outcome::kept("mask could not be resized");
     }
     write_back(doc, task.id, &prepared.raster, &best);
-    if prepared.converted {
-        set_color_space(doc, task.id, b"DeviceRGB");
+    if prepared.converted || prepared.reduced {
+        set_color_space(doc, task.id, prepared.raster.format);
     }
     Outcome {
-        action: prepared.action_label().into(),
+        action: prepared.action_label(),
         codec: Some(best.codec),
         bytes_out: Some(best.bytes.len()),
     }
@@ -179,12 +188,20 @@ fn attempt(doc: &mut Document, task: Task<'_>) -> Outcome {
 /// The raster after decoding and the transforms the preset asks for.
 struct Prepared {
     raster: Raster,
+    reduced: bool,
     resized: bool,
     converted: bool,
 }
 
 fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
     let raster = decode::decode(doc, task.stream, &task.info)?;
+    let (raster, reduced) = match reducible(&task.info, task.config) {
+        true => match transform::reduce(&raster) {
+            Some(r) => (r, true),
+            None => (raster, false),
+        },
+        false => (raster, false),
+    };
     let target = downsample_target(&raster, &task.info, task.config, task.dpi);
     let (raster, resized) = match target.and_then(|(w, h)| transform::downsample(&raster, w, h)) {
         Some(small) => (small, true),
@@ -196,17 +213,32 @@ fn prepare(doc: &Document, task: &Task<'_>) -> Result<Prepared, Skip> {
     };
     Ok(Prepared {
         raster,
+        reduced,
         resized,
         converted,
     })
 }
 
+/// Complexity reduction applies to plain device color spaces only: an ICC
+/// profile, a color-key mask, or stencil semantics would be lost.
+fn reducible(info: &ImageInfo, config: &Config) -> bool {
+    config.reduce_color_complexity
+        && info.icc_profile.is_none()
+        && !info.is_stencil
+        && !info.has_color_key_mask
+        && matches!(info.color, classify::ColorSpace::Device(_))
+}
+
 /// The smallest candidate encoding, or `None` when no encoder applies.
 fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
-    let codecs = class_codecs(task.config, task.info.class());
+    let codecs = format_codecs(task.config, prepared.raster.format);
     let lossy_ok = !task.info.has_color_key_mask;
     let mut candidates = candidates(&prepared.raster, codecs, lossy_ok, task.config.jpeg_quality);
-    if !prepared.resized && !prepared.converted && task.info.image_codec() == Some("DCTDecode") {
+    if !prepared.resized
+        && !prepared.converted
+        && !prepared.reduced
+        && task.info.image_codec() == Some("DCTDecode")
+    {
         // The stored JPEG without any wrapper filters: lossless and often
         // smaller than the Flate-wrapped original.
         candidates.extend(passthrough(task.stream, &task.info));
@@ -215,19 +247,43 @@ fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
 }
 
 impl Prepared {
-    fn action_label(&self) -> &'static str {
-        match (self.resized, self.converted) {
-            (true, true) => "downsampled+rgb",
-            (true, false) => "downsampled",
-            (false, true) => "rgb",
-            (false, false) => "recoded",
+    fn action_label(&self) -> String {
+        let steps: Vec<&str> = [
+            (self.reduced, "reduced"),
+            (self.resized, "downsampled"),
+            (self.converted, "rgb"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if steps.is_empty() {
+            "recoded".into()
+        } else {
+            steps.join("+")
         }
     }
 }
 
-fn set_color_space(doc: &mut Document, id: ObjectId, name: &[u8]) {
+/// After a reduction or conversion the device space follows the raster.
+fn set_color_space(doc: &mut Document, id: ObjectId, format: Format) {
+    let name: &[u8] = match format {
+        Format::Gray1 | Format::Gray8 => b"DeviceGray",
+        Format::Rgb8 => b"DeviceRGB",
+        Format::Cmyk8 => b"DeviceCMYK",
+        Format::Indexed8 => return,
+    };
     if let Ok(Object::Stream(s)) = doc.get_object_mut(id) {
         s.dict.set("ColorSpace", Object::Name(name.to_vec()));
+    }
+}
+
+/// Codecs for the raster as it is now (reduction may have changed its
+/// class since the dictionary was read).
+fn format_codecs(config: &Config, format: Format) -> Codecs {
+    match format {
+        Format::Gray1 => config.bitonal,
+        Format::Indexed8 => config.indexed,
+        _ => config.continuous,
     }
 }
 
@@ -359,31 +415,171 @@ fn write_back(doc: &mut Document, id: ObjectId, raster: &Raster, best: &Encoded)
     }
 }
 
-/// A parent that shrinks must shrink its `/SMask` to the same size. Returns
-/// false when a mask exists but cannot be handled, in which case the parent
-/// is kept. Stencil `/Mask` references are not resampled yet, so parents
-/// that carry one are kept as well.
-fn resize_soft_mask(doc: &mut Document, parent: &Stream, width: u32, height: u32) -> bool {
-    if matches!(parent.dict.get(b"Mask"), Ok(Object::Reference(_))) {
-        return false;
+// ------------------------------------------------------------------ masks
+//
+// Soft masks (`/SMask`) and stencil masks (`/Mask` referencing an image
+// mask) attached to an image: simplification and resizing alongside the
+// parent.
+
+/// Simplify the parent's soft mask, when `reduce_color_complexity` asks:
+/// an opaque mask is removed; a mask with only 0 and 255 becomes a
+/// stencil `/Mask`. Returns what was done, for the report.
+fn simplify_soft_mask(doc: &mut Document, parent_id: ObjectId) -> Option<&'static str> {
+    let (mask_id, mask) = soft_mask(doc, parent_id)?;
+    if mask.dict.has(b"Matte") {
+        return None;
     }
-    let Ok(Object::Reference(mask_id)) = parent.dict.get(b"SMask") else {
-        return true;
+    let info = classify::read_info(doc, &mask.dict)?;
+    let raster = decode::decode(doc, &mask, &info).ok()?;
+    if raster.format != Format::Gray8 {
+        return None;
+    }
+    if raster.data.iter().all(|&v| v == 255) {
+        parent_dict(doc, parent_id)?.remove(b"SMask");
+        return Some("smask-removed");
+    }
+    if !raster.data.iter().all(|&v| v == 0 || v == 255) {
+        return None;
+    }
+    // Soft mask 0 (transparent) is stencil 1 (masked out).
+    let inverted: Vec<u8> = raster.data.iter().map(|&v| 255 - v).collect();
+    let stencil =
+        Raster::new(raster.width, raster.height, Format::Gray8, inverted)?.gray8_to_gray1();
+    let best = best_bitonal(&stencil)?;
+    let Ok(Object::Stream(s)) = doc.get_object_mut(mask_id) else {
+        return None;
     };
-    let mask_id = *mask_id;
+    s.dict.set("ImageMask", true);
+    s.dict.remove(b"ColorSpace");
+    s.dict.remove(b"BitsPerComponent");
+    encode::apply(s, &stencil, &best);
+    let parent = parent_dict(doc, parent_id)?;
+    parent.remove(b"SMask");
+    parent.set("Mask", Object::Reference(mask_id));
+    Some("smask-to-stencil")
+}
+
+/// Bring the parent's masks to `width` x `height` after the parent was
+/// downsampled. Returns false when a mask exists but cannot be handled.
+fn resize_masks(doc: &mut Document, parent_id: ObjectId, width: u32, height: u32) -> bool {
+    let parent = match doc.get_object(parent_id) {
+        Ok(Object::Stream(s)) => s.dict.clone(),
+        _ => return false,
+    };
+    for key in [&b"SMask"[..], b"Mask"] {
+        let Ok(Object::Reference(mask_id)) = parent.get(key) else {
+            continue;
+        };
+        if !resize_one(doc, *mask_id, width, height) {
+            return false;
+        }
+    }
+    true
+}
+
+fn resize_one(doc: &mut Document, mask_id: ObjectId, width: u32, height: u32) -> bool {
     let Ok(Object::Stream(mask)) = doc.get_object(mask_id) else {
         return false;
     };
     let mask = mask.clone();
-    let small = classify::read_info(doc, &mask.dict)
+    let Some(small) = classify::read_info(doc, &mask.dict)
         .and_then(|info| decode::decode(doc, &mask, &info).ok())
-        .and_then(|raster| transform::downsample(&raster, width, height));
-    let Some(small) = small else {
+        .and_then(|raster| transform::downsample(&raster, width, height))
+    else {
         return false;
     };
-    let Some(enc) = encode::flate(&small) else {
+    let best = match small.format {
+        Format::Gray1 => best_bitonal(&small),
+        _ => encode::flate(&small),
+    };
+    let Some(best) = best else {
         return false;
     };
-    write_back(doc, mask_id, &small, &enc);
+    if let Ok(Object::Stream(s)) = doc.get_object_mut(mask_id) {
+        encode::apply(s, &small, &best);
+    }
     true
+}
+
+fn best_bitonal(raster: &Raster) -> Option<Encoded> {
+    [encode::flate(raster), bitonal::encode_g4(raster)]
+        .into_iter()
+        .flatten()
+        .min_by_key(|e| e.bytes.len())
+}
+
+fn soft_mask(doc: &Document, parent_id: ObjectId) -> Option<(ObjectId, Stream)> {
+    let Ok(Object::Stream(parent)) = doc.get_object(parent_id) else {
+        return None;
+    };
+    let mask_id = parent.dict.get(b"SMask").ok()?.as_reference().ok()?;
+    match doc.get_object(mask_id) {
+        Ok(Object::Stream(s)) => Some((mask_id, s.clone())),
+        _ => None,
+    }
+}
+
+fn parent_dict(doc: &mut Document, parent_id: ObjectId) -> Option<&mut lopdf::Dictionary> {
+    match doc.get_object_mut(parent_id) {
+        Ok(Object::Stream(s)) => Some(&mut s.dict),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use lopdf::dictionary;
+
+    use super::*;
+    use lopdf::Stream;
+
+    fn doc_with_mask(mask_pixels: Vec<u8>) -> (Document, ObjectId, ObjectId) {
+        let mut doc = Document::with_version("1.5");
+        let mask = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Image", "Width" => 2, "Height" => 2,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8 },
+            mask_pixels,
+        ));
+        let parent = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Image", "Width" => 2, "Height" => 2,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "SMask" => mask },
+            vec![0; 12],
+        ));
+        (doc, parent, mask)
+    }
+
+    #[test]
+    fn opaque_soft_mask_is_removed() {
+        let (mut doc, parent, _) = doc_with_mask(vec![255; 4]);
+        assert_eq!(simplify_soft_mask(&mut doc, parent), Some("smask-removed"));
+        let parent = doc.get_object(parent).unwrap().as_stream().unwrap();
+        assert!(!parent.dict.has(b"SMask"));
+    }
+
+    #[test]
+    fn two_level_soft_mask_becomes_a_stencil() {
+        let (mut doc, parent, mask) = doc_with_mask(vec![0, 255, 255, 0]);
+        assert_eq!(
+            simplify_soft_mask(&mut doc, parent),
+            Some("smask-to-stencil")
+        );
+        let parent = doc.get_object(parent).unwrap().as_stream().unwrap();
+        assert_eq!(
+            parent.dict.get(b"Mask").unwrap().as_reference().unwrap(),
+            mask
+        );
+        let mask = doc.get_object(mask).unwrap().as_stream().unwrap();
+        assert!(mask.dict.get(b"ImageMask").unwrap().as_bool().unwrap());
+        // Transparent (0) pixels are masked out (1): row 0 = 10, row 1 = 01.
+        let info = classify::read_info(&doc, &mask.dict).unwrap();
+        let bits = decode::decode(&doc, mask, &info).unwrap();
+        assert_eq!(bits.format, Format::Gray1);
+        assert_eq!(bits.data, vec![0b1000_0000, 0b0100_0000]);
+    }
+
+    #[test]
+    fn graded_soft_mask_is_left_alone() {
+        let (mut doc, parent, _) = doc_with_mask(vec![0, 100, 200, 255]);
+        assert_eq!(simplify_soft_mask(&mut doc, parent), None);
+    }
 }
