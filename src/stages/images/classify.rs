@@ -80,24 +80,34 @@ pub fn read_info(doc: &Document, dict: &Dictionary) -> Option<ImageInfo> {
         .get(b"ImageMask")
         .and_then(Object::as_bool)
         .unwrap_or(false);
+    let filters = filters(dict);
+    // JPX codestreams carry their own depth and color space; the dictionary
+    // may omit both.
+    let jpx = filters.iter().any(|f| f == "JPXDecode");
     let bpc = if is_stencil {
         1
     } else {
-        dict.get(b"BitsPerComponent")
-            .and_then(Object::as_i64)
-            .ok()? as u8
+        match dict.get(b"BitsPerComponent").and_then(Object::as_i64) {
+            Ok(b) => b as u8,
+            Err(_) if jpx => 8,
+            Err(_) => return None,
+        }
     };
     let color = if is_stencil {
         ColorSpace::Device(ColorModel::Gray)
     } else {
-        color_space(doc, dict.get(b"ColorSpace").ok()?)
+        match dict.get(b"ColorSpace") {
+            Ok(cs) => color_space(doc, cs),
+            Err(_) if jpx => ColorSpace::Other("from JPX codestream".into()),
+            Err(_) => return None,
+        }
     };
     Some(ImageInfo {
         width: width as u32,
         height: height as u32,
         bpc,
         color,
-        filters: filters(dict),
+        filters,
         decode: decode_array(dict),
         is_stencil,
         has_color_key_mask: matches!(dict.get(b"Mask"), Ok(Object::Array(_))),

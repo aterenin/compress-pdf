@@ -324,6 +324,7 @@ dependencies = [
  "flate2",
  "hayro-ccitt",
  "hayro-jbig2",
+ "hayro-jpeg2000",
  "hayro-syntax",
  "jbig2enc-rust",
  "libtest-mimic",
@@ -660,6 +661,11 @@ name = "hayro-jpeg2000"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c75ab947623ef4ccaa7acf0579edf7cbb5a73838e3839a7be73335e522f433a1"
+dependencies = [
+ "fearless_simd",
+ "image",
+ "moxcms",
+]
 
 [[package]]
 name = "hayro-syntax"

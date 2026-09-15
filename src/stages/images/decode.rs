@@ -44,8 +44,48 @@ pub fn decode(doc: &Document, stream: &Stream, info: &ImageInfo) -> Result<Raste
             let raster = bitonal::decode_jbig2(&data, globals.as_deref(), info.width, info.height)?;
             apply_decode(raster, info)
         }
+        Some("JPXDecode") => decode_jpx(stream, info),
         Some(codec) => Err(Skip::new(format!("{codec} input not decoded yet"))),
     }
+}
+
+// ------------------------------------------------------------------ JPX
+
+/// JPEG 2000 through hayro-jpeg2000. The codestream's own color space
+/// wins (the dictionary may omit one); images with an alpha channel are
+/// left alone because `SMaskInData` semantics are not implemented.
+fn decode_jpx(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
+    use hayro_jpeg2000::{ColorSpace as JpxColor, DecodeSettings, Image};
+    let data = codestream(stream, info)?;
+    let image = Image::new(&data, &DecodeSettings::default())
+        .map_err(|e| Skip::new(format!("JPX does not decode: {e:?}")))?;
+    if image.has_alpha() {
+        return Err(Skip::new("JPX with an alpha channel"));
+    }
+    if (image.width(), image.height()) != (info.width, info.height) {
+        return Err(Skip::new("JPX size differs from the dictionary"));
+    }
+    let format = match image.color_space().num_channels() {
+        1 => Format::Gray8,
+        3 => Format::Rgb8,
+        4 => Format::Cmyk8,
+        n => return Err(Skip::new(format!("JPX with {n} channels"))),
+    };
+    if matches!(image.color_space(), JpxColor::Unknown { .. }) {
+        return Err(Skip::new("JPX with an unknown color space"));
+    }
+    if let ColorSpace::Device(model) = info.color
+        && model_components(model) != format.samples_per_pixel()
+    {
+        return Err(Skip::new(
+            "JPX channels differ from the dictionary color space",
+        ));
+    }
+    let pixels = image
+        .decode()
+        .map_err(|e| Skip::new(format!("JPX does not decode: {e:?}")))?;
+    Raster::new(info.width, info.height, format, pixels)
+        .ok_or_else(|| Skip::new("JPX sample count mismatch"))
 }
 
 /// The `DecodeParms` entry that belongs to the image codec (the last

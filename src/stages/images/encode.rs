@@ -186,6 +186,18 @@ pub fn apply(stream: &mut Stream, raster: &Raster, encoded: &Encoded) {
             i64::from(raster.format.bits_per_component()),
         );
     }
+    if !stencil && !dict.has(b"ColorSpace") {
+        // Only a JPX source can lack one; the raster's format is the
+        // codestream's device space.
+        let name: &[u8] = match raster.format {
+            Format::Gray8 | Format::Gray1 => b"DeviceGray",
+            Format::Rgb8 => b"DeviceRGB",
+            Format::Cmyk8 => b"DeviceCMYK",
+            Format::Indexed8 => b"DeviceGray",
+        };
+        dict.set("ColorSpace", Object::Name(name.to_vec()));
+    }
+    dict.remove(b"SMaskInData");
     dict.remove(b"Decode");
     dict.remove(b"DecodeParms");
     dict.remove(b"DP");
