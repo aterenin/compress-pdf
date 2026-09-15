@@ -52,6 +52,79 @@ struct Usage {
     keep_all: [bool; 7],
 }
 
+/// Fonts in an AcroForm's default resources (`/DR`) that no default
+/// appearance string names. Nothing else can select them: fields draw
+/// with the fonts their `/DA` strings name, and an XFA engine (which may
+/// pick fonts by name from the same dictionary) is ruled out by requiring
+/// that the document has no `/XFA` entry. Returns the number removed.
+pub fn prune_default_resource_fonts(doc: &mut Document, used: &HashSet<Vec<u8>>) -> usize {
+    let Some((at, doomed)) = default_resource_fonts_to_drop(doc, used) else {
+        return 0;
+    };
+    let Some(fonts) = dict_at_mut(doc, &at) else {
+        return 0;
+    };
+    for name in &doomed {
+        fonts.remove(name);
+    }
+    doomed.len()
+}
+
+/// A dictionary reached from an object by a chain of inline keys.
+struct DictPath {
+    base: ObjectId,
+    keys: Vec<Vec<u8>>,
+}
+
+fn default_resource_fonts_to_drop(
+    doc: &Document,
+    used: &HashSet<Vec<u8>>,
+) -> Option<(DictPath, Vec<Vec<u8>>)> {
+    let root = doc.trailer.get(b"Root").ok()?.as_reference().ok()?;
+    let mut at = DictPath {
+        base: root,
+        keys: Vec::new(),
+    };
+    for key in [&b"AcroForm"[..], b"DR", b"Font"] {
+        let dict = dict_at(doc, &at)?;
+        if key == b"DR" && dict.has(b"XFA") {
+            return None;
+        }
+        match dict.get(key).ok()? {
+            Object::Reference(id) => {
+                at = DictPath {
+                    base: *id,
+                    keys: Vec::new(),
+                }
+            }
+            Object::Dictionary(_) => at.keys.push(key.to_vec()),
+            _ => return None,
+        }
+    }
+    let doomed: Vec<Vec<u8>> = dict_at(doc, &at)?
+        .iter()
+        .filter(|(name, _)| !used.contains(*name))
+        .map(|(name, _)| name.clone())
+        .collect();
+    Some((at, doomed))
+}
+
+fn dict_at<'a>(doc: &'a Document, at: &DictPath) -> Option<&'a Dictionary> {
+    let mut dict = doc.get_dictionary(at.base).ok()?;
+    for key in &at.keys {
+        dict = dict.get(key).ok()?.as_dict().ok()?;
+    }
+    Some(dict)
+}
+
+fn dict_at_mut<'a>(doc: &'a mut Document, at: &DictPath) -> Option<&'a mut Dictionary> {
+    let mut dict = doc.get_dictionary_mut(at.base).ok()?;
+    for key in &at.keys {
+        dict = dict.get_mut(key).ok()?.as_dict_mut().ok()?;
+    }
+    Some(dict)
+}
+
 /// Returns the number of entries removed.
 pub fn prune_unused(doc: &mut Document) -> usize {
     let protected = inherited_resources(doc);

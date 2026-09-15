@@ -27,7 +27,8 @@ impl Stage for CleanStructure {
 
     fn run(&self, doc: &mut Document, ctx: &mut Context<'_>) -> Result<()> {
         if ctx.config.optimize_resources {
-            let removed = resources::prune_unused(doc);
+            let removed = resources::prune_unused(doc)
+                + resources::prune_default_resource_fonts(doc, &ctx.usage.appearance_fonts);
             if removed > 0 {
                 ctx.report.note(format!(
                     "structure: removed {removed} unused resource entries"
@@ -159,6 +160,41 @@ mod tests {
         assert_eq!(dict.get(b"List").unwrap().as_array().unwrap(), &[2.into()]);
         assert!(!dict.get(b"Inner").unwrap().as_dict().unwrap().has(b"Deep"));
         assert_eq!(drop_dangling_references(&mut doc), 0);
+    }
+
+    fn doc_with_form(xfa: bool, da: &str) -> (Document, ObjectId) {
+        let mut doc = Document::with_version("1.5");
+        let f1 = doc.add_object(
+            dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica" },
+        );
+        let f2 = doc.add_object(
+            dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier" },
+        );
+        let fonts = doc.add_object(dictionary! { "Helv" => f1, "Cour" => f2 });
+        let field = doc.add_object(
+            dictionary! { "T" => Object::string_literal("x"), "DA" => Object::string_literal(da) },
+        );
+        let mut acro =
+            dictionary! { "Fields" => vec![field.into()], "DR" => dictionary! { "Font" => fonts } };
+        if xfa {
+            acro.set("XFA", Object::string_literal("<xdp/>"));
+        }
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "AcroForm" => acro });
+        doc.trailer.set("Root", catalog);
+        (doc, fonts)
+    }
+
+    #[test]
+    fn default_resource_fonts_no_appearance_names_are_dropped() {
+        let (mut doc, fonts) = doc_with_form(false, "/Helv 12 Tf 0 g");
+        let used = HashSet::from([b"Helv".to_vec()]);
+        assert_eq!(resources::prune_default_resource_fonts(&mut doc, &used), 1);
+        let dict = doc.get_dictionary(fonts).unwrap();
+        assert!(dict.has(b"Helv") && !dict.has(b"Cour"));
+        // An XFA form may pick fonts by name: nothing is dropped.
+        let (mut doc, fonts) = doc_with_form(true, "/Helv 12 Tf 0 g");
+        assert_eq!(resources::prune_default_resource_fonts(&mut doc, &used), 0);
+        assert!(doc.get_dictionary(fonts).unwrap().has(b"Cour"));
     }
 
     #[test]

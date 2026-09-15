@@ -22,10 +22,10 @@
 mod geometry;
 mod walker;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
-use lopdf::{Document, ObjectId};
+use lopdf::{Document, Object, ObjectId};
 
 use crate::config::Config;
 use crate::pipeline::{Context, Stage};
@@ -87,6 +87,11 @@ pub struct ImageUsage {
     /// never appears here was reached through a path the walker does not
     /// follow.
     pub fonts: HashMap<ObjectId, TextUsage>,
+    /// Resource names selected with `Tf` in any default appearance string
+    /// (`/DA` on the AcroForm, a field, a widget or an annotation): fonts
+    /// a viewer may draw with when it regenerates an appearance, outside
+    /// any content stream.
+    pub appearance_fonts: HashSet<Vec<u8>>,
 }
 
 pub struct AnalyzeUsage;
@@ -103,6 +108,7 @@ impl Stage for AnalyzeUsage {
             || config.clip_images
             || config.subset_fonts
             || config.merge_fonts
+            || config.optimize_resources
     }
 
     fn run(&self, doc: &mut Document, ctx: &mut Context<'_>) -> Result<()> {
@@ -111,6 +117,7 @@ impl Stage for AnalyzeUsage {
         for page_id in doc.page_iter() {
             walker.walk_page(page_id);
         }
+        usage.appearance_fonts = default_appearance_fonts(doc);
         tracing::debug!(
             images = usage.by_object.len(),
             fonts = usage.fonts.len(),
@@ -119,6 +126,40 @@ impl Stage for AnalyzeUsage {
         ctx.usage = usage;
         Ok(())
     }
+}
+
+/// Resource names selected with `Tf` in any default appearance string.
+fn default_appearance_fonts(doc: &Document) -> HashSet<Vec<u8>> {
+    let mut names = HashSet::new();
+    let mut strings: Vec<&[u8]> = Vec::new();
+    if let Ok(catalog) = doc.catalog()
+        && let Some(acro) = catalog
+            .get(b"AcroForm")
+            .ok()
+            .and_then(|a| doc.dereference(a).ok())
+            .and_then(|(_, a)| a.as_dict().ok())
+        && let Ok(Object::String(da, _)) = acro.get(b"DA")
+    {
+        strings.push(da);
+    }
+    for obj in doc.objects.values() {
+        if let Object::Dictionary(d) = obj
+            && let Ok(Object::String(da, _)) = d.get(b"DA")
+        {
+            strings.push(da);
+        }
+    }
+    for da in strings {
+        let tokens: Vec<&[u8]> = da.split(|b| b.is_ascii_whitespace()).collect();
+        for triple in tokens.windows(3) {
+            if triple[2] == b"Tf"
+                && let Some(name) = triple[0].strip_prefix(b"/")
+            {
+                names.insert(name.to_vec());
+            }
+        }
+    }
+    names
 }
 
 #[cfg(test)]
@@ -147,7 +188,7 @@ mod tests {
         });
         doc.objects.insert(
             pages_id,
-            lopdf::Object::Dictionary(
+            Object::Dictionary(
                 dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
             ),
         );
@@ -205,6 +246,22 @@ mod tests {
         // form the name F1 resolves to the form's own F2.
         assert_eq!(shown(f1), vec![b"ab".to_vec(), b"e".to_vec()]);
         assert_eq!(shown(f2), vec![b"c".to_vec(), b"d".to_vec(), b"z".to_vec()]);
+    }
+
+    #[test]
+    fn default_appearance_strings_name_their_fonts() {
+        let (mut doc, _) = doc_with_image(b"");
+        let field = doc.add_object(dictionary! { "T" => Object::string_literal("x"),
+        "DA" => Object::string_literal("0 g /Helv 12 Tf") });
+        let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        doc.get_dictionary_mut(root).unwrap().set(
+            "AcroForm",
+            dictionary! { "Fields" => vec![field.into()], "DA" => Object::string_literal("/Cour 0 Tf 0 g") },
+        );
+        let usage = analyze(&mut doc);
+        let mut names: Vec<&[u8]> = usage.appearance_fonts.iter().map(Vec::as_slice).collect();
+        names.sort();
+        assert_eq!(names, [b"Cour" as &[u8], b"Helv"]);
     }
 
     #[test]

@@ -60,7 +60,7 @@ impl Stage for OptimizeFonts {
         }
         if ctx.config.subset_fonts {
             let seen = Seen {
-                untouchable: untouchable_fonts(doc),
+                untouchable: untouchable_fonts(doc, &ctx.usage.appearance_fonts),
                 usage: &ctx.usage.fonts,
             };
             for (program, fonts) in by_program(collect_fonts(doc)) {
@@ -292,9 +292,8 @@ impl Outcome {
 /// string (`/DA`, on the AcroForm or any field, widget or annotation)
 /// names in the AcroForm's default resources, and those in the resources
 /// of Type 3 fonts (used by glyph procedures).
-fn untouchable_fonts(doc: &Document) -> HashSet<ObjectId> {
+fn untouchable_fonts(doc: &Document, da_names: &HashSet<Vec<u8>>) -> HashSet<ObjectId> {
     let mut out = HashSet::new();
-    let da_names = default_appearance_fonts(doc);
     if let Some(dr_fonts) = doc
         .catalog()
         .ok()
@@ -334,39 +333,6 @@ fn type3_resource_fonts(doc: &Document) -> Vec<ObjectId> {
         }
     }
     out
-}
-
-/// Resource names selected with `Tf` in any default appearance string.
-fn default_appearance_fonts(doc: &Document) -> HashSet<Vec<u8>> {
-    let mut names = HashSet::new();
-    let mut strings: Vec<&[u8]> = Vec::new();
-    if let Ok(catalog) = doc.catalog()
-        && let Some(acro) = catalog
-            .get(b"AcroForm")
-            .ok()
-            .and_then(|a| deref(doc, a).as_dict().ok())
-        && let Ok(Object::String(da, _)) = acro.get(b"DA")
-    {
-        strings.push(da);
-    }
-    for obj in doc.objects.values() {
-        if let Object::Dictionary(d) = obj
-            && let Ok(Object::String(da, _)) = d.get(b"DA")
-        {
-            strings.push(da);
-        }
-    }
-    for da in strings {
-        let tokens: Vec<&[u8]> = da.split(|b| b.is_ascii_whitespace()).collect();
-        for pair in tokens.windows(3) {
-            if pair[2] == b"Tf"
-                && let Some(name) = pair[0].strip_prefix(b"/")
-            {
-                names.insert(name.to_vec());
-            }
-        }
-    }
-    names
 }
 
 /// What the usage walk learned, and what it could not see.
@@ -766,6 +732,7 @@ mod tests {
             .or_default()
             .strings
             .insert(b"A".to_vec());
+        usage.appearance_fonts.insert(b"F1".to_vec());
         let report = run(&mut doc, Preset::Standard, usage);
         assert_eq!(
             report.fonts[0].action,
@@ -789,6 +756,7 @@ mod tests {
             .or_default()
             .strings
             .insert(b"A".to_vec());
+        usage.appearance_fonts.insert(b"Helv".to_vec());
         let report = run(&mut doc, Preset::Standard, usage);
         // The program is junk, so the subsetter cannot parse it; what
         // matters is that the AcroForm rule no longer stops it.
