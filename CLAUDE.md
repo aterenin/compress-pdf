@@ -519,6 +519,16 @@ million pixels so a huge media box cannot do the same. Stages:
 | strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
 | structure | done: content streams (page contents, forms, patterns, Type 3 glyph procedures) rewritten in canonical token form and re-compressed when smaller, under the never-grow rule per stream; unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners whose content does not decode or parse strictly, inherited resources, and owners whose resources list a Type 3 font, form XObject or pattern without resources of its own, which draws with the owner's, are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, the AcroForm default resources treated as an owner whose content is the set of default appearance strings (fonts only; other categories kept whole; left alone entirely with an XFA entry), references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | |
 
+A second-pass check ran the standard preset with render verification over
+1,856 documents (2.9 GB, papers, books and articles) that a Ghostscript-based
+tool had already compressed: every file completed, none was refused, no
+page fell below the floor, and the files shrank a further 18 percent
+overall (papers 25, books 14, articles 55 percent). The render check
+found three defects on the way that the structural check cannot see,
+each fixed: HarfBuzz's hint removal cutting outlines in Ghostscript's
+charstrings, the strip stage removing a font resource named `/B`, and
+hayro misreading lopdf's escaped binary literals.
+
 Implementation order was structure, strip, usage, then images, then fonts.
 This differs from pipeline order on purpose: structure and strip are cheap
 and verify the harness; usage must exist before images can downsample or
