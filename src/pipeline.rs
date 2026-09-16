@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
-use lopdf::{Document, Object};
+use lopdf::{Document, Object, StringFormat};
 
 use crate::config::Config;
 use crate::report::{Report, StageSummary};
@@ -73,6 +73,7 @@ pub fn run(doc: &mut Document, config: &Config, report: &mut Report) -> Result<(
         anyhow::bail!(DAMAGED_RESOURCES);
     }
     normalize_filters(doc);
+    hex_binary_strings(doc);
     let mut ctx = Context {
         config,
         report,
@@ -188,6 +189,33 @@ fn normalize_filters(doc: &mut Document) {
             s.dict.remove(b"Filter");
             s.dict.remove(b"DecodeParms");
         }
+    }
+}
+
+/// Strings holding bytes outside printable ASCII are written in
+/// hexadecimal. lopdf writes a string in the form it was read, escaping
+/// what a literal needs escaped, and hayro's literal-string lexer, which
+/// both verification levels rely on, reads some of those escaped binary
+/// strings differently (an Indexed palette came back as gray indices);
+/// hex has no escapes to disagree about. Text strings stay literal.
+fn hex_binary_strings(doc: &mut Document) {
+    for obj in doc.objects.values_mut() {
+        hexify(obj);
+    }
+    for (_, value) in doc.trailer.iter_mut() {
+        hexify(value);
+    }
+}
+
+fn hexify(object: &mut Object) {
+    match object {
+        Object::String(bytes, format) if bytes.iter().any(|b| !(0x20..0x7f).contains(b)) => {
+            *format = StringFormat::Hexadecimal;
+        }
+        Object::Array(items) => items.iter_mut().for_each(hexify),
+        Object::Dictionary(dict) => dict.iter_mut().for_each(|(_, v)| hexify(v)),
+        Object::Stream(stream) => stream.dict.iter_mut().for_each(|(_, v)| hexify(v)),
+        _ => {}
     }
 }
 
@@ -336,6 +364,31 @@ mod tests {
         };
         s.dict.set("Length", 0);
         assert!(resources_are_intact(&doc));
+    }
+
+    #[test]
+    fn binary_strings_are_written_in_hexadecimal() {
+        let mut doc = Document::with_version("1.5");
+        let palette = Object::String(vec![0xff, 0x0d, b'(', b')', 0x28], StringFormat::Literal);
+        let text = Object::String(b"Hello (world)".to_vec(), StringFormat::Literal);
+        let id = doc.add_object(dictionary! { "Lookup" => vec![palette, text.clone()] });
+        doc.trailer.set(
+            "ID",
+            vec![Object::String(vec![0x00, 0x01], StringFormat::Literal)],
+        );
+        hex_binary_strings(&mut doc);
+        let dict = doc.get_dictionary(id).unwrap();
+        let items = dict.get(b"Lookup").unwrap().as_array().unwrap();
+        assert!(matches!(
+            items[0],
+            Object::String(_, StringFormat::Hexadecimal)
+        ));
+        assert!(matches!(items[1], Object::String(_, StringFormat::Literal)));
+        let ids = doc.trailer.get(b"ID").unwrap().as_array().unwrap();
+        assert!(matches!(
+            ids[0],
+            Object::String(_, StringFormat::Hexadecimal)
+        ));
     }
 
     #[test]

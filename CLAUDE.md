@@ -494,7 +494,10 @@ malformed token (`-.` as a number has been seen), and the usage walk and
 the resource pruning would both read a truncated operation list as "nothing
 after this point is used". A stream whose `Filter` is an empty array is
 normalized to no filter before the stages run, since lopdf decodes it to
-nothing. The full corpus (`EVALS_SUBSET=full`, standard preset, release
+nothing, and strings holding non-printable bytes are marked for hexadecimal
+output, since hayro's literal-string lexer reads some of lopdf's escaped
+binary literals differently (an Indexed palette rendered as gray indices
+until then). The full corpus (`EVALS_SUBSET=full`, standard preset, release
 build) runs in about 20 seconds without rendering and about 12 minutes
 with `EVALS_RENDER=1`; `evals-expectations.toml` lists 48 files: ones lopdf
 cannot load, loads into a broken graph, or hangs on, two where its loader
