@@ -111,7 +111,7 @@ fn record_range(rec: &[u8]) -> Option<std::ops::Range<usize>> {
 }
 
 /// Where the table `tag` lives, from a scan of the directory.
-fn table_range(data: &[u8], tag: &[u8; 4]) -> Option<std::ops::Range<usize>> {
+pub fn table_range(data: &[u8], tag: &[u8; 4]) -> Option<std::ops::Range<usize>> {
     let num_tables = usize::from(u16::from_be_bytes(data.get(4..6)?.try_into().ok()?));
     (0..num_tables)
         .filter_map(|i| data.get(12 + 16 * i..28 + 16 * i))
