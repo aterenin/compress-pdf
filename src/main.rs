@@ -85,14 +85,19 @@ fn verify_render(cli: &Cli, input: &[u8], output: &[u8], report: &mut Report) ->
     }
 }
 
+/// lopdf logs one warning per item it cannot handle (a filtered inline
+/// image, a stream it cannot decode), which on some files means hundreds of
+/// thousands of lines; what matters reaches the report as a note, so its
+/// warnings are shown one verbosity level later than ours.
 fn init_logging(verbosity: u8) {
-    let level = match verbosity {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
+    let (level, lopdf) = match verbosity {
+        0 => ("warn", "error"),
+        1 => ("info", "warn"),
+        2 => ("debug", "info"),
+        _ => ("trace", "trace"),
     };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("{level},lopdf={lopdf}")));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)

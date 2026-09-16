@@ -102,6 +102,9 @@ main -> Cli -> Config -> pipeline::run(doc, config, report) -> save_modern -> ve
   standard-14 recognition, and the CFF, TrueType and Type 1 parsing and
   writing the font stage builds on. It never reads `Config`.
 - `src/cli.rs` turns flags into a `Config`. Nothing below `main` sees clap.
+  Logging shows our warnings by default and lopdf's one verbosity level
+  later, since lopdf warns once per item it cannot handle and some files
+  have hundreds of thousands; `RUST_LOG` overrides both.
 - `src/config.rs` is the whole knob set, as data. Presets are `Config` values.
 - `src/pipeline.rs` defines `Stage` and runs the fixed stage list, measuring
   serialized size after each stage for the report.
@@ -255,8 +258,11 @@ force-recompress option.
 Under the scope rule, `Config` carries only what the presets use. Codec sets
 are drawn from jpeg, flate, g4, jbig2, source. Color conversion is none or
 RGB. Strip flags are the eight in the mapping table. The command line exposes
-the preset plus overrides for the fields in the table above; there is no
-grayscale option.
+the preset plus an override for every `Config` field: `--dpi` and
+`--threshold-dpi` (all classes at once), `--quality`, the three codec lists,
+`--color-conversion`, `--strip`, and a `true`/`false` flag for each boolean
+(clipping, color reduction, the four font passes, resource cleanup,
+deduplication, content-stream rebuild). There is no grayscale option.
 
 ### Testing
 
@@ -419,7 +425,15 @@ Fixed for v1 and expected to be revisited against evals results.
 - JBIG2 mode: generic-region coding, lossless. The available encoder's symbol
   mode substitutes glyphs (lossy) and has no refinement, so it is not used.
   Revisit when a lossless symbol mode exists or the evals show generic
-  coding far behind the reference outputs on scanned text.
+  coding far behind the reference outputs on scanned text. Possible
+  improvement: contribute refinement coding to `jbig2enc-rust`, whose
+  decoder already reads refinement regions and whose encoder has the
+  configuration fields but not the implementation; each glyph instance
+  would then be its dictionary symbol plus the exact pixel difference,
+  which is what makes a symbol dictionary lossless and is what optimizers
+  of the reference's class ship. Whether the reference's own outputs use
+  symbol coding, refinement and a shared globals stream can be read from
+  their JBIG2 segment headers once they exist.
 - Content stream rebuild: rewrite each content stream at the token level
   (single spaces, comments dropped, numbers without redundant digits,
   strings and names verbatim) rather than from lopdf's parsed operators,

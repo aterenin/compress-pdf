@@ -5,6 +5,31 @@
 
 use std::fmt;
 use std::ops::BitOr;
+use std::str::FromStr;
+
+/// Parse a comma-separated list of names against a name table; `none`
+/// (or an empty list) is the empty set.
+fn parse_set<T: Copy + BitOr<Output = T>>(
+    s: &str,
+    empty: T,
+    names: &[(T, &str)],
+) -> Result<T, String> {
+    let mut out = empty;
+    for item in s.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        if item == "none" {
+            continue;
+        }
+        let Some((value, _)) = names.iter().find(|(_, n)| *n == item) else {
+            let known: Vec<&str> = names.iter().map(|(_, n)| *n).collect();
+            return Err(format!(
+                "unknown name `{item}`; expected one of {}",
+                known.join(", ")
+            ));
+        };
+        out = out | *value;
+    }
+    Ok(out)
+}
 
 /// Set of codecs a stage may *try* for an image class. The image stage encodes
 /// with every member and keeps the smallest result. `SOURCE` means "the
@@ -47,6 +72,14 @@ impl BitOr for Codecs {
     type Output = Codecs;
     fn bitor(self, rhs: Codecs) -> Codecs {
         Codecs(self.0 | rhs.0)
+    }
+}
+
+impl FromStr for Codecs {
+    type Err = String;
+    /// `jpeg,flate,source`; `none` for the empty set.
+    fn from_str(s: &str) -> Result<Codecs, String> {
+        parse_set(s, Codecs::NONE, &Codecs::NAMES)
     }
 }
 
@@ -99,6 +132,14 @@ impl BitOr for Strip {
     type Output = Strip;
     fn bitor(self, rhs: Strip) -> Strip {
         Strip(self.0 | rhs.0)
+    }
+}
+
+impl FromStr for Strip {
+    type Err = String;
+    /// `threads,metadata,...`; `none` for nothing.
+    fn from_str(s: &str) -> Result<Strip, String> {
+        parse_set(s, Strip::NONE, &Strip::NAMES)
     }
 }
 
