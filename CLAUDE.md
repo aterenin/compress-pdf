@@ -80,7 +80,7 @@ through Rust bindings.
 | Font subsetting | Reduce embedded TrueType, CFF and OpenType programs to the glyphs the content streams use. Glyph IDs are retained, so nothing that refers to a glyph (content strings, CMaps, `CIDToGIDMap`, the font's `cmap`) changes; unused glyphs keep their ID and lose their outline. Hinting and layout tables are dropped. Which glyphs a simple font's codes reach is computed as the union over every rule a viewer may apply (symbol, Macintosh and Unicode `cmap` subtables, `post` and CFF glyph names, built-in encodings). | embedded TrueType, CFF, OpenType; Type 1 after conversion | `hb-subset` (HarfBuzz, C++, bundled) for the subsetting; `read-fonts` (Rust) to read `cmap`, `post` and CFF charsets and encodings; own code for the PDF side (encodings, embedded CMaps, the OpenType wrapper HarfBuzz needs around bare CFF) | [x] |
 | Font merging | Merge embedded font programs that are byte-identical into one, repointing every font dictionary that used them. Merging different subsets of the same font would need glyph-level comparison of programs whose glyph IDs were renumbered independently, and is not attempted. | duplicate embeddings | the structure stage's deduplication | [x] |
 | Type 1 to CFF conversion | Convert embedded Type 1 (`/FontFile`) programs to CFF (`/FontFile3`, `Type1C`), which is more compact and which the subsetter can then reduce. Charstrings are translated to Type 2 with subroutines expanded, flex and seac carried over, and hints dropped; the built-in encoding and private values are kept. A glyph that fails to translate keeps the whole program unconverted. | Type 1 fonts | own: Type 1 reader, charstring translator and CFF writer (`font/{type1,charstring,cff}.rs`), whose handling of malformed programs was learned from pdf.js and implemented independently; `read-fonts` parses the result back in tests, `hayro-font` renders the Type 1 original as the test oracle | [x] |
-| Standard-font unembedding | Drop the program of an embedded standard-14 font when its Unicode mapping is clean, so viewers substitute. | Helvetica, Times, Courier, Symbol, ZapfDingbats families | own | [ ] |
+| Standard-font unembedding | Drop the program of an embedded standard-14 font when its encoding stands on its own (a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), so viewers substitute. Name aliases are folded to the canonical 14 and the font is renamed. | Helvetica, Times, Courier, Symbol, ZapfDingbats families | own | [x] |
 | Stripping | Remove non-visual parts: article threads, metadata, piece info, structure tree, thumbnails, spider info, alternate images, output intents. | document and page dictionaries | own, over lopdf | [x] |
 | Structural cleanup | Flate-compress uncompressed streams, rewrite content streams in a canonical token form (single spaces, no comments, numbers without redundant digits) when that compresses smaller, deduplicate identical objects by content hash, drop unused resources (an AcroForm's default resources count as one more resource owner, whose users are the default appearance strings) and unreferenced objects, renumber, raise the PDF version to what the output needs, write object streams and an xref stream. | whole file | `lopdf` (Rust) plus own dedupe and content lexer | [x] |
 
@@ -464,10 +464,10 @@ Fixed for v1 and expected to be revisited against evals results.
 The crate is split into `src/lib.rs` (config, pipeline, report, stages) and
 a thin `src/main.rs`. It runs end to end and re-reads its own output.
 `main`, `cli`, `config`, `pipeline`, and `report` are complete for the
-design above; `config` and `usage` have unit tests. `tests/evals.rs` is in
+design above, and every module carries unit tests. `tests/evals.rs` is in
 place: `cargo test --test evals` runs the `quick` subset under all three
-presets (78 trials, about two seconds) with the four structural invariants;
-the render-based check is not wired in yet. `src/verify.rs` implements the
+presets (78 trials, about twenty seconds) with the four structural
+invariants, plus the render check when asked. `src/verify.rs` implements the
 structural level with `hayro-syntax`, with the input as baseline; `main`
 refuses to write on regressions and the harness fails on them. Encrypted
 input is refused by `pipeline::run` (lopdf decrypts on load and drops the
