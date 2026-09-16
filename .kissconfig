@@ -15,7 +15,7 @@ orphan_allowed = []
 
 [rust]
 statements_per_function = 35
-arguments = 4                       # default 8; a stage gets (doc, ctx) and helpers should stay small
+arguments = 6                       # default 8; was 4 (a stage gets (doc, ctx) and helpers should stay small) until read-fonts' CommandSink::curve_to, six arguments, had to be implemented; nothing of ours takes more than 4
 max_indentation = 4                 # default 5
 nested_function_depth = 2
 returns_per_function = 5

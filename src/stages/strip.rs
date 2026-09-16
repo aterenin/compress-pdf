@@ -2,10 +2,10 @@
 //!
 //! Each flag maps to concrete dictionary keys:
 //!   THREADS          catalog /Threads, page /B
-//!   METADATA         /Metadata streams on the catalog and on any object
-//!   PIECE_INFO       /PieceInfo on the catalog and on any object
+//!   METADATA         /Metadata streams on the catalog and on any typed object
+//!   PIECE_INFO       /PieceInfo on the catalog and on any typed object
 //!   STRUCT_TREE      catalog /StructTreeRoot and /MarkInfo; /StructParents
-//!                    and /StructParent on any object; marked-content
+//!                    and /StructParent on any typed object; marked-content
 //!                    operators are left in place
 //!   THUMBNAILS       page /Thumb
 //!   SPIDER           catalog /SpiderInfo
@@ -56,17 +56,23 @@ const CATALOG_KEYS: [(Strip, &[u8]); 6] = [
     (Strip::METADATA, b"Metadata"),
 ];
 
-/// Keys removed from every dictionary and stream dictionary, per flag.
-/// Page-only keys (`/B`, `/Thumb`) and image-only keys (`/Alternates`)
-/// only ever occur on those objects, so no type check is needed.
-const OBJECT_KEYS: [(Strip, &[u8]); 7] = [
-    (Strip::THREADS, b"B"),
+/// Keys removed from page dictionaries only, per flag.
+const PAGE_KEYS: [(Strip, &[u8]); 2] = [(Strip::THREADS, b"B"), (Strip::THUMBNAILS, b"Thumb")];
+
+/// Keys removed from image streams only, per flag.
+const IMAGE_KEYS: [(Strip, &[u8]); 1] = [(Strip::ALTERNATES, b"Alternates")];
+
+/// Keys removed from every stream and from every dictionary that declares
+/// a `/Type`, per flag. Dictionaries keyed by resource name (a resource
+/// category, a Type 3 font's `CharProcs`) carry no `/Type`, and any of
+/// these keys can be such a name: dvips calls its fonts `/A`, `/B`, and
+/// so on, and removing `/B` from a font resource dictionary once silently
+/// dropped every glyph shown with that font.
+const OBJECT_KEYS: [(Strip, &[u8]); 4] = [
     (Strip::METADATA, b"Metadata"),
     (Strip::PIECE_INFO, b"PieceInfo"),
     (Strip::STRUCT_TREE, b"StructParents"),
     (Strip::STRUCT_TREE, b"StructParent"),
-    (Strip::THUMBNAILS, b"Thumb"),
-    (Strip::ALTERNATES, b"Alternates"),
 ];
 
 /// Returns the number of dictionary entries removed.
@@ -76,14 +82,29 @@ pub fn strip(doc: &mut Document, flags: Strip) -> usize {
         removed += remove_keys(catalog, flags, &CATALOG_KEYS);
     }
     for obj in doc.objects.values_mut() {
-        let dict = match obj {
-            Object::Dictionary(d) => d,
-            Object::Stream(s) => &mut s.dict,
-            _ => continue,
-        };
-        removed += remove_keys(dict, flags, &OBJECT_KEYS);
+        match obj {
+            Object::Dictionary(dict) if dict.has(b"Type") => {
+                removed += remove_keys(dict, flags, &OBJECT_KEYS);
+                if has_type(dict, b"Type", b"Page") {
+                    removed += remove_keys(dict, flags, &PAGE_KEYS);
+                }
+            }
+            Object::Stream(stream) => {
+                removed += remove_keys(&mut stream.dict, flags, &OBJECT_KEYS);
+                if has_type(&stream.dict, b"Subtype", b"Image") {
+                    removed += remove_keys(&mut stream.dict, flags, &IMAGE_KEYS);
+                }
+            }
+            _ => {}
+        }
     }
     removed
+}
+
+fn has_type(dict: &Dictionary, key: &[u8], name: &[u8]) -> bool {
+    dict.get(key)
+        .and_then(Object::as_name)
+        .is_ok_and(|n| n == name)
 }
 
 fn remove_keys(dict: &mut Dictionary, flags: Strip, keys: &[(Strip, &[u8])]) -> usize {
@@ -111,11 +132,17 @@ mod tests {
             dictionary! { "Type" => "XObject", "Subtype" => "Image", "Alternates" => vec![], "StructParent" => 3 },
             vec![0],
         ));
+        // Resource names that collide with strippable keys, as dvips writes
+        // them; these dictionaries carry no /Type and must be left alone.
+        let fonts = doc.add_object(dictionary! {
+            "B" => dictionary! { "Type" => "Font", "Subtype" => "Type3", "CharProcs" => dictionary! { "Thumb" => thumb, "Metadata" => thumb } },
+            "Thumb" => dictionary! {},
+        });
         let pages_id = doc.new_object_id();
         let page = doc.add_object(dictionary! {
             "Type" => "Page", "Parent" => pages_id, "B" => vec![], "Thumb" => thumb,
             "StructParents" => 0, "PieceInfo" => dictionary! {}, "Metadata" => meta,
-            "Resources" => dictionary! { "XObject" => dictionary! { "Im" => image } },
+            "Resources" => dictionary! { "XObject" => dictionary! { "Im" => image }, "Font" => fonts },
         });
         doc.objects.insert(
             pages_id,
@@ -153,6 +180,32 @@ mod tests {
             .collect();
         out.sort();
         out
+    }
+
+    #[test]
+    fn resource_names_that_look_like_strippable_keys_survive() {
+        let mut doc = loaded_doc();
+        let before = doc.objects.len();
+        strip(
+            &mut doc,
+            Strip::THREADS
+                | Strip::METADATA
+                | Strip::PIECE_INFO
+                | Strip::STRUCT_TREE
+                | Strip::THUMBNAILS
+                | Strip::ALTERNATES,
+        );
+        assert_eq!(doc.objects.len(), before);
+        let fonts = doc
+            .objects
+            .values()
+            .filter_map(|o| o.as_dict().ok())
+            .find(|d| d.has(b"B") && !d.has(b"Type"))
+            .expect("font resources kept");
+        assert!(fonts.has(b"Thumb"));
+        let procs = fonts.get(b"B").unwrap().as_dict().unwrap();
+        let procs = procs.get(b"CharProcs").unwrap().as_dict().unwrap();
+        assert!(procs.has(b"Thumb") && procs.has(b"Metadata"));
     }
 
     #[test]
