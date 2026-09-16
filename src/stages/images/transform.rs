@@ -149,19 +149,46 @@ mod raster_tests {
 
 /// Resample to `width` x `height`. Continuous-tone images use Lanczos3;
 /// palette indices use nearest neighbour; bitonal images are resampled as
-/// gray and thresholded at mid-gray (the provisional choice in CLAUDE.md).
+/// gray by area averaging and thresholded toward the ink color (the
+/// provisional choice in CLAUDE.md).
 pub fn downsample(raster: &Raster, width: u32, height: u32) -> Option<Raster> {
     if width == 0 || height == 0 || (width, height) == (raster.width, raster.height) {
         return None;
     }
     match raster.format {
         Format::Gray1 => {
-            let gray = resize(&raster.gray1_to_gray8(), width, height, lanczos())?;
-            Some(gray.gray8_to_gray1())
+            let unpacked = raster.gray1_to_gray8();
+            let black = unpacked.data.iter().filter(|v| **v == 0).count();
+            let ink_is_black = black * 2 <= unpacked.data.len();
+            let gray = resize(
+                &unpacked,
+                width,
+                height,
+                ResizeAlg::Convolution(FilterType::Box),
+            )?;
+            Some(threshold_toward_ink(&gray, ink_is_black))
         }
         Format::Indexed8 => resize(raster, width, height, ResizeAlg::Nearest),
         _ => resize(raster, width, height, lanczos()),
     }
+}
+
+/// Ink (the minority color, black in a text scan) survives when it covers
+/// at least this fraction of a downsampled pixel: a one-pixel line still
+/// comes through a 2x reduction, which mid-gray thresholding would erase.
+const INK_COVERAGE: f32 = 0.3;
+
+/// Pack area-averaged gray to 1 bit, giving a pixel the ink color when
+/// the ink's coverage reaches [`INK_COVERAGE`].
+fn threshold_toward_ink(gray: &Raster, ink_is_black: bool) -> Raster {
+    let cutoff = (255.0 * INK_COVERAGE) as u8;
+    let mut packed = gray.clone();
+    for v in &mut packed.data {
+        let coverage = if ink_is_black { 255 - *v } else { *v };
+        let ink = coverage >= cutoff;
+        *v = if ink == ink_is_black { 0 } else { 255 };
+    }
+    packed.gray8_to_gray1()
 }
 
 fn lanczos() -> ResizeAlg {
@@ -499,6 +526,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.data, vec![0b0100_0000, 0b1010_0000]);
+    }
+
+    #[test]
+    fn bitonal_downsampling_keeps_thin_ink() {
+        // A one-pixel black line on white, and a one-pixel white line on
+        // black: both survive a 2x reduction, thickened rather than lost.
+        let mut white = vec![255u8; 16 * 16];
+        for x in 0..16 {
+            white[5 * 16 + x] = 0;
+        }
+        let line = Raster::new(16, 16, Format::Gray8, white)
+            .unwrap()
+            .gray8_to_gray1();
+        let small = downsample(&line, 8, 8).unwrap().gray1_to_gray8();
+        assert!(
+            small.data[2 * 8..3 * 8].iter().all(|v| *v == 0),
+            "{:?}",
+            small.data
+        );
+        assert!(small.data[..2 * 8].iter().all(|v| *v == 255));
+        let mut black = vec![0u8; 16 * 16];
+        for x in 0..16 {
+            black[5 * 16 + x] = 255;
+        }
+        let line = Raster::new(16, 16, Format::Gray8, black)
+            .unwrap()
+            .gray8_to_gray1();
+        let small = downsample(&line, 8, 8).unwrap().gray1_to_gray8();
+        assert!(
+            small.data[2 * 8..3 * 8].iter().all(|v| *v == 255),
+            "{:?}",
+            small.data
+        );
+        assert!(small.data[..2 * 8].iter().all(|v| *v == 0));
     }
 
     #[test]

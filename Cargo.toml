@@ -46,6 +46,7 @@ moxcms = "0.9"              # ICC color conversion
 # Font stage.
 hb-subset = { version = "0.3", features = ["bundled"] }  # HarfBuzz subsetting (C++, glyph IDs retained)
 read-fonts = "0.44"         # cmap, post, CFF charset and encoding lookups
+hayro = { version = "0.7", features = ["embed-fonts", "embed-cmaps"] }  # rasterizer for the visual verify level
 
 # Used only by examples/ (the `cargo evals` tool) and tests.
 [dev-dependencies]

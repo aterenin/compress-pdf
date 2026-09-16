@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use compress_pdf::{pipeline, report::Report, verify};
 
-use crate::cli::Cli;
+use crate::cli::{Cli, VerifyArg};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -45,6 +45,9 @@ fn main() -> Result<()> {
                 );
             }
         }
+        if cli.verify == VerifyArg::Render {
+            verify_render(&cli, &input, &buf, &mut report)?;
+        }
     }
 
     if cli.dry_run {
@@ -56,6 +59,30 @@ fn main() -> Result<()> {
     print!("{report}");
     println!("wrote {}", output.display());
     Ok(())
+}
+
+/// The visual level: every page rendered before and after and compared.
+/// A page under the preset's floor is a warning, or with `--strict` a
+/// failure that leaves nothing written.
+fn verify_render(cli: &Cli, input: &[u8], output: &[u8], report: &mut Report) -> Result<()> {
+    match verify::render::compare(input, output, cli.preset.into()) {
+        Ok(comparison) => {
+            report.note(comparison.to_string());
+            if comparison.below_floor().is_empty() {
+                return Ok(());
+            }
+            if cli.strict {
+                print!("{report}");
+                bail!("pages below the similarity floor; nothing written (--strict)");
+            }
+            report.note("warning: pages below the similarity floor; output written anyway");
+            Ok(())
+        }
+        Err(e) => {
+            report.note(format!("render: skipped, {e}"));
+            Ok(())
+        }
+    }
 }
 
 fn init_logging(verbosity: u8) {

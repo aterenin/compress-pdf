@@ -1,6 +1,8 @@
 //! Corpus evals: one test per PDF per preset over the fetched corpus.
 //!
 //! Selection (see CLAUDE.md, "Testing"):
+//! - `EVALS_RENDER=1` also renders every page before and after and fails a
+//!   trial whose pages fall below the preset's similarity floor.
 //! - `EVALS_SUBSET` names a subset from `evals.toml` (default `quick`) or
 //!   `full` for every PDF under `evals/corpus/`.
 //! - `EVALS_PRESETS` is a comma list of presets (default: all three for a
@@ -209,6 +211,12 @@ fn run_one(path: &Path, preset: Preset) -> Result<(), Failed> {
     }
 }
 
+/// `EVALS_RENDER=1` adds the visual level: every page of input and output
+/// rendered and compared, failing below the preset's floor.
+fn render_enabled() -> bool {
+    env::var("EVALS_RENDER").is_ok_and(|v| v == "1")
+}
+
 fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
     let input = fs::read(path).map_err(|e| format!("read: {e}"))?;
     let mut doc = Document::load_mem(&input).map_err(|e| format!("input does not parse: {e}"))?;
@@ -235,7 +243,15 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
 
     let output = pipeline::serialize(&mut doc, &input, &mut report)
         .map_err(|e| format!("serialize failed: {e:#}"))?;
-    check_output(&input, &output, pages_in, &report)
+    check_output(&input, &output, pages_in, &report)?;
+    if render_enabled() && output != input {
+        let rendered =
+            verify::render::compare(&input, &output, preset).map_err(|e| format!("render: {e}"))?;
+        if !rendered.below_floor().is_empty() {
+            return Err(format!("{rendered}").into());
+        }
+    }
+    Ok(())
 }
 
 fn check_output(

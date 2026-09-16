@@ -120,6 +120,9 @@ enum Cmd {
         /// Subset from evals.toml.
         #[arg(long, default_value = "scoring")]
         subset: String,
+        /// Skip rendering; the minimum page SSIM column is then omitted.
+        #[arg(long)]
+        no_render: bool,
     },
     /// Write the synthetic probe PDFs to a directory, one per probe, for
     /// running through a reference tool.
@@ -137,7 +140,8 @@ fn main() -> Result<()> {
             preset,
             reference,
             subset,
-        } => score::score(preset.as_deref(), reference.as_deref(), &subset),
+            no_render,
+        } => score::score(preset.as_deref(), reference.as_deref(), &subset, !no_render),
         Cmd::Probes { out } => probes(&out),
     }
 }

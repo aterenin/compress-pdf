@@ -197,17 +197,31 @@ pub fn bitonal_lines() -> Document {
     let (w, h) = (1200u32, 600u32);
     let stride = (w as usize).div_ceil(8);
     let mut samples = vec![0xFFu8; stride * h as usize];
-    // Scan-like texture: irregular strokes, so the bits do not compress
-    // into almost nothing and downsampling is the deciding step.
+    // Scan-like content: a few hundred random strokes six pixels wide,
+    // which survive downsampling the way text does but do not compress
+    // into almost nothing the way a regular pattern would.
     let mut seed = 0x2545_F491u32;
-    for y in 0..h as usize {
-        for x in 0..w as usize {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            let stroke = (x / 9 + y / 13 + (seed % 5) as usize).is_multiple_of(4);
-            if stroke {
-                samples[y * stride + x / 8] &= !(0x80 >> (x % 8));
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let set = |x: i64, y: i64, samples: &mut [u8]| {
+        if (0..w as i64).contains(&x) && (0..h as i64).contains(&y) {
+            samples[y as usize * stride + x as usize / 8] &= !(0x80 >> (x % 8));
+        }
+    };
+    for _ in 0..400 {
+        let (x0, y0) = ((next() % w) as i64, (next() % h) as i64);
+        let (dx, dy) = ((next() % 121) as i64 - 60, (next() % 61) as i64 - 30);
+        let steps = dx.abs().max(dy.abs()).max(1);
+        for t in 0..=steps {
+            let (x, y) = (x0 + dx * t / steps, y0 + dy * t / steps);
+            for oy in 0..6 {
+                for ox in 0..6 {
+                    set(x + ox, y + oy, &mut samples);
+                }
             }
         }
     }

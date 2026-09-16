@@ -18,6 +18,10 @@ pub enum Program {
     Cff,
 }
 
+/// Tables copied through unchanged: a viewer's lookup path from character
+/// code to glyph, which retained glyph IDs keep correct.
+const PASS_THROUGH_TABLES: [&[u8; 4]; 2] = [b"cmap", b"post"];
+
 /// Tables a PDF consumer never reads: layout, legacy kerning, hinting
 /// helpers, signatures. Dropping them is a pure saving.
 const DROP_TABLES: [&[u8; 4]; 12] = [
@@ -58,6 +62,16 @@ pub fn subset(
         let mut drop = input.drop_table_tag_set();
         for tag in DROP_TABLES {
             drop.insert(hb_subset::Tag::new(tag));
+        }
+    }
+    {
+        // With glyph IDs retained the original code-to-glyph tables stay
+        // valid, and HarfBuzz would otherwise drop the subtables it does
+        // not rewrite (the Macintosh one simple fonts often rely on) and
+        // sometimes the glyph names; keep both untouched.
+        let mut keep = input.no_subset_table_tag_set();
+        for tag in PASS_THROUGH_TABLES {
+            keep.insert(hb_subset::Tag::new(tag));
         }
     }
     let mut flags = input.flags();

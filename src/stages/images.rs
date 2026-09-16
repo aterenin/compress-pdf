@@ -321,7 +321,7 @@ fn reducible(info: &ImageInfo, config: &Config) -> bool {
 /// The smallest candidate encoding, or `None` when no encoder applies.
 fn choose(task: &Task<'_>, prepared: &Prepared) -> Option<Encoded> {
     let codecs = format_codecs(task.config, prepared.raster.format);
-    let lossy_ok = !task.info.has_color_key_mask;
+    let lossy_ok = !task.info.has_color_key_mask && !is_tiny(&task.info);
     let mut candidates = candidates(&prepared.raster, codecs, lossy_ok, task.config.jpeg_quality);
     if !prepared.resized
         && !prepared.converted
@@ -426,6 +426,15 @@ fn convert_color(
 
 /// Target size when the class rule says to downsample. Images with a
 /// color-key mask are never resampled (the key values would change).
+/// Images with fewer pixels than this (icons, bullets, rules) are neither
+/// downsampled nor re-encoded lossily: the bytes at stake are negligible
+/// and the damage to a 16-pixel glyph is not.
+const MIN_TRANSFORM_PIXELS: u64 = 10_000;
+
+fn is_tiny(info: &ImageInfo) -> bool {
+    u64::from(info.width) * u64::from(info.height) < MIN_TRANSFORM_PIXELS
+}
+
 fn downsample_target(
     raster: &Raster,
     info: &ImageInfo,
@@ -434,7 +443,7 @@ fn downsample_target(
 ) -> Option<(u32, u32)> {
     let rule = class_dpi(config, info.class());
     let dpi = dpi?;
-    if !rule.enabled() || dpi <= rule.threshold || info.has_color_key_mask {
+    if !rule.enabled() || dpi <= rule.threshold || info.has_color_key_mask || is_tiny(info) {
         return None;
     }
     Some(transform::scaled_size(

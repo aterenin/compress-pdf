@@ -7,7 +7,10 @@
 //! here is a bug in the pipeline, never a warning: callers must not write
 //! the file.
 //!
-//! The visual (render and compare) level is not implemented yet.
+//! The visual level (render both documents and compare pages with SSIM)
+//! lives in [`render`].
+
+pub mod render;
 
 use std::fmt;
 

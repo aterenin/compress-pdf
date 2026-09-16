@@ -40,9 +40,27 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Verification level: `structural` re-parses the output; `render` also
+    /// rasterizes every page of input and output and compares them.
+    #[arg(long, value_enum, default_value_t = VerifyArg::Structural)]
+    pub verify: VerifyArg,
+
+    /// Treat a page below the preset's similarity floor as a failure
+    /// (nothing is written) instead of a warning.
+    #[arg(long)]
+    pub strict: bool,
+
     /// Increase log verbosity (-v info, -vv debug, -vvv trace). RUST_LOG overrides.
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum VerifyArg {
+    /// Re-parse the output with an independent reader (always on).
+    Structural,
+    /// Structural, plus rendering and SSIM comparison of every page.
+    Render,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

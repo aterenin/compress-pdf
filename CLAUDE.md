@@ -287,8 +287,8 @@ Three layers, all run by `cargo test`:
    - the output is not larger than the input;
    - the output re-parses with lopdf and has the same page count;
    - every image row in the report has `bytes_out <= bytes_in`;
-   - when `pdftoppm` is on PATH and `EVALS_RENDER=1`, each page rasterized
-     before and after has SSIM at or above a per-preset floor.
+   - with `EVALS_RENDER=1`, each page rasterized before and after with
+     `hayro` has SSIM at or above the preset's floor.
    Known failures are listed in `evals-expectations.toml` with a reason and
    are reported as ignored, so the suite stays green and the list is the
    backlog.
@@ -399,6 +399,15 @@ Fixed for v1 and expected to be revisited against evals results.
   content-stream walk.
 - Flate predictor selection: try each PNG predictor per image and keep the
   smallest.
+- Tiny images: images under 10,000 pixels (icons, bullets, rules) are
+  neither downsampled nor re-encoded lossily. The bytes at stake are
+  negligible and JPEG or a 2x reduction visibly damages a 16-pixel glyph.
+  Lossless re-encoding still applies.
+- Bitonal downsampling: area-average the bits to gray, then give a pixel
+  the ink color (the minority color of the image) when the ink covers at
+  least 30 percent of it. Mid-gray thresholding erased one-pixel features
+  in a 2x reduction; this keeps them at the cost of thickening. What a
+  reference does here is unknown.
 - JBIG2 mode: generic-region coding, lossless. The available encoder's symbol
   mode substitutes glyphs (lossy) and has no refinement, so it is not used.
   Revisit when a lossless symbol mode exists or the evals show generic
@@ -411,6 +420,10 @@ Fixed for v1 and expected to be revisited against evals results.
   as unreachable data (XFA-style forms often embed several full fonts
   there). Whether a reference tool does the same is unknown; to be checked
   once reference outputs exist.
+- SSIM floors: less 0.95, standard 0.93, more 0.90, at 72 dpi (pages
+  under 128 px on a side are scaled up to that) with 8x8-block SSIM on
+  2x2-averaged gray. Set from the corpus and probes; to be revisited
+  against reference outputs.
 - Color conversion scope: only color images (CMYK, and RGB or CMYK with an
   embedded profile) are converted to RGB; gray images are left in gray,
   since converting them would triple their size for no visual gain. Whether
@@ -439,7 +452,7 @@ verification blocks the resulting content loss. Stages:
 | Stage | Status | Done when |
 |---|---|---|
 | usage | done: CTM and bounding-box clip walk over page content, form XObjects (with `/Matrix` and `/BBox`), tiling patterns, and annotation appearance streams; `ImageUsage` holds pixels, placements with rendered size and visible fraction, `min_dpi()` and `crop_box()`; tested for two placements, rectangular clip, `Q` restoring the clip, form matrices, and undrawn images | |
-| images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels skipped) via hayro's decoders; downsample per class rule (Lanczos3, nearest for indices, gray-then-threshold for bitonal); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
+| images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels skipped) via hayro's decoders; downsample per class rule (Lanczos3; nearest for indices; bitonal by area averaging then a threshold toward the ink color at 30 percent coverage, so thin lines thicken rather than vanish); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
 | fonts | third milestone: every embedded program gets a report row; Type 1 programs converted to CFF (`Type1C`) under the never-grow rule, then subset like any CFF; subsetting of TrueType, CFF, CIDFontType0C and OpenType programs with glyph IDs retained (HarfBuzz), driven by the strings the usage walk recorded, with the union of glyphs over every font dictionary sharing a program; programs of fonts a default appearance string names in the AcroForm default resources, of fonts in Type 3 resources, and of fonts the walk never saw, are left alone; the program stream is rewritten Flate-compressed under the never-grow rule and untagged fonts get a subset tag derived from the glyph set; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Only Type 1 programs whose conversion fails stay unconverted; those are reported. |
 | strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
 | structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners that do not decode, inherited resources, and Type 3 fonts without resources are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, fonts in AcroForm default resources that no default appearance string names removed when the document has no XFA entry, references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
@@ -475,5 +488,12 @@ asserted against the presets' stated behavior and all run through every
 preset with the structural verifier; `cargo evals probes <dir>` writes the
 same files with a README listing them.
 
-Not yet present: the visual level of `verify` (`hayro` rendering and SSIM)
-and the rasterize-and-compare check in the corpus harness and in `score`.
+The visual level of `verify` is present: `verify::render` rasterizes
+every page of input and output with `hayro` (with its bundled standard
+fonts and CMaps, so unembedded text still renders) at 72 dpi and scores
+each page with block SSIM on gray; `--verify render` reports it, `--strict`
+fails on a page under the preset's floor, `EVALS_RENDER=1` applies it in
+the corpus harness, the probe tests apply it to every probe under every
+preset, and `score` prints the minimum page SSIM per file unless
+`--no-render`. Floors are provisional (less 0.95, standard 0.93, more
+0.90).

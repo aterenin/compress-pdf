@@ -65,6 +65,13 @@ fn every_probe_serializes_and_survives_every_preset() {
                 "{} under {preset:?}: {v}",
                 probe.name
             );
+            let rendered = compress_pdf::verify::render::compare(&bytes, &out, preset)
+                .unwrap_or_else(|e| panic!("{} under {preset:?}: {e}", probe.name));
+            assert!(
+                rendered.below_floor().is_empty(),
+                "{} under {preset:?}: {rendered}",
+                probe.name
+            );
         }
     }
 }
