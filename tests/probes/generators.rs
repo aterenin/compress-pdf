@@ -96,6 +96,16 @@ pub fn all() -> Vec<Probe> {
             about: "a form whose default resources are also the page's resources; page text uses a font no appearance string names",
             doc: form_shared_fonts(),
         },
+        Probe {
+            name: "verbose-content",
+            about: "a content stream with comments, redundant whitespace and numbers like 1.50000; lossless to normalize",
+            doc: verbose_content(),
+        },
+        Probe {
+            name: "inline-image",
+            about: "a content stream holding an inline image, whose binary data must be left byte for byte",
+            doc: inline_image(),
+        },
     ]
 }
 
@@ -638,6 +648,31 @@ pub fn form_shared_fonts() -> Document {
         .as_dict_mut()
         .unwrap();
     acro.set("DR", resources);
+    doc
+}
+
+/// A page drawing rectangles with a verbose content stream: comments,
+/// runs of whitespace, numbers written with trailing zeros.
+pub fn verbose_content() -> Document {
+    let mut doc = Document::with_version("1.5");
+    let mut content = String::from("% drawn by a verbose producer\r\n");
+    for i in 0..40 {
+        let y = 10.0 + f64::from(i) * 6.0;
+        content.push_str(&format!(
+            "q    1.00000 0.00000 0.00000 1.00000 +20.00000 {y:.5} cm   % row {i}\r\n0.50000 g\r\n0.00 0.00 200.000 4.000 re   f\r\nQ\r\n"
+        ));
+    }
+    one_page(&mut doc, content.as_bytes(), dictionary! {});
+    doc
+}
+
+/// A page with one inline image (2 x 2 gray pixels) drawn at 100 pt.
+pub fn inline_image() -> Document {
+    let mut doc = Document::with_version("1.5");
+    let mut content = b"q 100 0 0 100 50 50 cm BI /W 2 /H 2 /CS /G /BPC 8 ID ".to_vec();
+    content.extend_from_slice(&[0, 255, 255, 0]);
+    content.extend_from_slice(b" EI Q");
+    one_page(&mut doc, &content, dictionary! {});
     doc
 }
 

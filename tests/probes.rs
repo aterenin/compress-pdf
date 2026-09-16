@@ -266,6 +266,41 @@ fn metadata_and_thumbnail_are_stripped_by_standard_only() {
     assert!(has(&doc, b"Metadata") && has(&doc, b"Thumb"));
 }
 
+fn page_content(doc: &Document) -> Vec<u8> {
+    let page = doc.get_pages()[&1];
+    doc.get_page_content(page)
+}
+
+#[test]
+fn verbose_content_is_normalized_and_inline_images_are_left_alone() {
+    let (doc, report) = run(generators::verbose_content(), Preset::Standard);
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("re-serialized 1 content streams")),
+        "{report}"
+    );
+    let content = page_content(&doc);
+    assert!(
+        content.starts_with(b"q 1 0 0 1 20 10 cm .5 g 0 0 200 4 re f Q q 1 0 0 1 20 16 cm"),
+        "{}",
+        String::from_utf8_lossy(&content)
+    );
+    let (_, report) = run(generators::verbose_content(), Preset::Less);
+    assert!(
+        report.notes.iter().any(|n| n.contains("re-serialized")),
+        "{report}"
+    );
+
+    let (doc, report) = run(generators::inline_image(), Preset::Standard);
+    assert!(
+        !report.notes.iter().any(|n| n.contains("re-serialized")),
+        "{report}"
+    );
+    assert!(page_content(&doc).windows(4).any(|w| w == [0, 255, 255, 0]));
+}
+
 #[test]
 fn default_resource_fonts_are_pruned_unless_xfa() {
     let dr_fonts = |doc: &Document| -> Vec<Vec<u8>> {

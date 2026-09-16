@@ -82,7 +82,7 @@ through Rust bindings.
 | Type 1 to CFF conversion | Convert embedded Type 1 (`/FontFile`) programs to CFF (`/FontFile3`, `Type1C`), which is more compact and which the subsetter can then reduce. Charstrings are translated to Type 2 with subroutines expanded, flex and seac carried over, and hints dropped; the built-in encoding and private values are kept. A glyph that fails to translate keeps the whole program unconverted. | Type 1 fonts | own: Type 1 reader, charstring translator and CFF writer (`font/{type1,charstring,cff}.rs`), whose handling of malformed programs was learned from pdf.js and implemented independently; `read-fonts` parses the result back in tests, `hayro-font` renders the Type 1 original as the test oracle | [x] |
 | Standard-font unembedding | Drop the program of an embedded standard-14 font when its Unicode mapping is clean, so viewers substitute. | Helvetica, Times, Courier, Symbol, ZapfDingbats families | own | [ ] |
 | Stripping | Remove non-visual parts: article threads, metadata, piece info, structure tree, thumbnails, spider info, alternate images, output intents. | document and page dictionaries | own, over lopdf | [x] |
-| Structural cleanup | Flate-compress uncompressed streams, deduplicate identical objects by content hash, drop unused resources (an AcroForm's default resources count as one more resource owner, whose users are the default appearance strings) and unreferenced objects, renumber, raise the PDF version to what the output needs, write object streams and an xref stream. | whole file | `lopdf` (Rust) plus own dedupe | [~] |
+| Structural cleanup | Flate-compress uncompressed streams, rewrite content streams in a canonical token form (single spaces, no comments, numbers without redundant digits) when that compresses smaller, deduplicate identical objects by content hash, drop unused resources (an AcroForm's default resources count as one more resource owner, whose users are the default appearance strings) and unreferenced objects, renumber, raise the PDF version to what the output needs, write object streams and an xref stream. | whole file | `lopdf` (Rust) plus own dedupe and content lexer | [x] |
 
 `lopdf` provides the object model, parser, and writer for everything above.
 
@@ -95,7 +95,9 @@ main -> Cli -> Config -> pipeline::run(doc, config, report) -> save_modern -> ve
 ```
 
 - `src/lib.rs` exposes `config`, `pipeline`, `report`, `stages`, `verify`,
-  and `font`; the binary and the test harnesses are clients of it.
+  `font` and `content`; the binary and the test harnesses are clients of it.
+- `src/content.rs` is the content-stream lexer that produces the canonical
+  form the structure stage stores. It never reads `Config`.
 - `src/font/` is font-program machinery independent of the pipeline:
   standard-14 recognition, and the CFF, TrueType and Type 1 parsing and
   writing the font stage builds on. It never reads `Config`.
@@ -147,7 +149,7 @@ behind.
 | images | `stages/images.rs` | image XObjects, `Context.usage` | image streams and dictionaries | Classify, decode to raster, transform (clip to crop box, color conversion, color-complexity reduction, downsampling), encode with every allowed codec plus the original bytes, keep the smallest, rewrite the stream keeping SMask/Mask consistent. Split into `images/{classify,decode,transform,encode,bitonal,function}.rs`: dictionary reading and color-space mapping, decoding, raster type and transforms, output codecs, bitonal codecs, PDF functions with the type 4 calculator. | [~] |
 | fonts | `stages/fonts.rs` | font dictionaries, content streams | font programs and dictionaries | Unembed the 14 standard fonts when the font's encoding stands on its own; convert Type 1 programs to CFF; subset embedded TrueType/CFF/OpenType programs to the glyphs referenced by content streams, glyph IDs retained. Byte-identical programs are merged by the structure stage. | [x] |
 | strip | `stages/strip.rs` | catalog, pages, XObjects | dictionary entries only | Remove the parts selected by `Strip` flags: threads, metadata streams, piece info, structure tree, thumbnails, spider info, alternate images, output intents. Removed objects become unreferenced and are collected by `structure`. | [x] |
-| structure | `stages/structure.rs` | whole object map | whole object map | Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, raise the header version to the minimum the output needs (1.4 for JBIG2; lopdf raises to 1.5 itself when it writes object streams). Object streams and the xref stream are written by lopdf's `save_with_options`, configured in `pipeline::serialize` for maximum packing (level 9, up to 5,000 objects per stream). | [~] |
+| structure | `stages/structure.rs` | whole object map | whole object map | Rewrite content streams in canonical form where smaller, Flate-compress uncompressed streams, deduplicate identical streams and dictionaries by content hash and repoint references, drop unused entries from `/Resources` dictionaries, drop unreferenced objects, renumber, raise the header version to the minimum the output needs (1.4 for JBIG2; lopdf raises to 1.5 itself when it writes object streams). Object streams and the xref stream are written by lopdf's `save_with_options`, configured in `pipeline::serialize` for maximum packing (level 9, up to 5,000 objects per stream). | [x] |
 
 ### Output verification
 
@@ -418,9 +420,13 @@ Fixed for v1 and expected to be revisited against evals results.
   mode substitutes glyphs (lossy) and has no refinement, so it is not used.
   Revisit when a lossless symbol mode exists or the evals show generic
   coding far behind the reference outputs on scanned text.
-- Content stream rebuild: re-serialize each content stream from its parsed
-  operator list, which normalizes formatting and makes resource references
-  exact; nothing else is changed.
+- Content stream rebuild: rewrite each content stream at the token level
+  (single spaces, comments dropped, numbers without redundant digits,
+  strings and names verbatim) rather than from lopdf's parsed operators,
+  which hold reals as `f32` and would round coordinates. The stream must
+  parse strictly before and after and yield the same operations, streams
+  holding inline images are left alone, and the result is kept only when
+  it compresses smaller than what is stored. Nothing else is changed.
 - Unused default-resource fonts: fonts in an AcroForm's `/DR` that no
   default appearance string names are dropped when there is no XFA entry,
   as unreachable data (XFA-style forms often embed several full fonts
@@ -484,7 +490,7 @@ million pixels so a huge media box cannot do the same. Stages:
 | images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs, honoring the `ColorTransform` decode parameter when the codestream has no Adobe marker; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels, and indexed or mapped dictionary spaces, skipped) via hayro's decoders; CMYK rasters resized with alpha handling off, since the resizer would otherwise premultiply by the K channel; downsample per class rule (Lanczos3; nearest for indices; bitonal by area averaging then a threshold toward the ink color at 30 percent coverage, so thin lines thicken rather than vanish); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
 | fonts | third milestone: every embedded program gets a report row; Type 1 programs converted to CFF (`Type1C`) under the never-grow rule, then subset like any CFF; subsetting of TrueType, CFF, CIDFontType0C and OpenType programs with glyph IDs retained (HarfBuzz), driven by the strings the usage walk recorded, with the union of glyphs over every font dictionary sharing a program (for an OpenType program with CFF outlines under a CID font, both the `CIDToGIDMap` and the CFF charset readings are kept, since the subtype is not consulted; embedded CMaps may use `bfchar` and `bfrange`, read as CIDs); programs of fonts a default appearance string names in the AcroForm default resources, of fonts in Type 3 resources, and of fonts the walk never saw, are left alone; the program stream is rewritten Flate-compressed under the never-grow rule and untagged fonts get a subset tag derived from the glyph set; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Only Type 1 programs whose conversion fails stay unconverted; those are reported. |
 | strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
-| structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners whose content does not decode or parse strictly, inherited resources, and owners whose resources list a Type 3 font, form XObject or pattern without resources of its own, which draws with the owner's, are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, the AcroForm default resources treated as an owner whose content is the set of default appearance strings (fonts only; other categories kept whole; left alone entirely with an XFA entry), references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
+| structure | done: content streams (page contents, forms, patterns, Type 3 glyph procedures) rewritten in canonical token form and re-compressed when smaller, under the never-grow rule per stream; unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners whose content does not decode or parse strictly, inherited resources, and owners whose resources list a Type 3 font, form XObject or pattern without resources of its own, which draws with the owner's, are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, the AcroForm default resources treated as an owner whose content is the set of default appearance strings (fonts only; other categories kept whole; left alone entirely with an XFA entry), references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | |
 
 Implementation order was structure, strip, usage, then images, then fonts.
 This differs from pipeline order on purpose: structure and strip are cheap
@@ -509,11 +515,11 @@ fonts, a slide deck, scans with JPX and CCITT, a CID-keyed CFF; about 28
 MB); `status` reports each subset's presence on disk.
 
 Present: `tests/probes.rs` with its generators in
-`tests/probes/generators.rs` (sixteen one-variable documents: CMYK, gray
+`tests/probes/generators.rs` (eighteen one-variable documents: CMYK, gray
 RGB, bitonal, indexed, JPEG, clipped, opaque soft mask, Lab, duplicate and
 unused resources, a partly used Type 1 font, an embedded Arial, metadata
 and thumbnail, AcroForm default resources with and without XFA and shared
-with the page's resources), each
+with the page's resources, a verbose content stream, an inline image), each
 asserted against the presets' stated behavior and all run through every
 preset with the structural verifier; `cargo evals probes <dir>` writes the
 same files with a README listing them.

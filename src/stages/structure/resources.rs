@@ -254,13 +254,13 @@ fn lends_resources(doc: &Document, loc: ResLoc, borrowers: &HashSet<ObjectId>) -
         .any(|id| borrowers.contains(&id))
 }
 
-fn is_type3(d: &Dictionary) -> bool {
+pub(super) fn is_type3(d: &Dictionary) -> bool {
     d.get(b"Subtype")
         .and_then(Object::as_name)
         .is_ok_and(|s| s == b"Type3")
 }
 
-fn is_form_or_pattern(d: &Dictionary) -> bool {
+pub(super) fn is_form_or_pattern(d: &Dictionary) -> bool {
     d.get(b"Subtype")
         .and_then(Object::as_name)
         .is_ok_and(|s| s == b"Form")

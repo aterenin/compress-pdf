@@ -184,6 +184,8 @@ pub struct Config {
     // Structure.
     pub optimize_resources: bool,
     pub remove_redundant_objects: bool,
+    /// Rewrite content streams in canonical token form when smaller.
+    pub rebuild_content_streams: bool,
     pub strip: Strip,
 }
 
@@ -214,6 +216,7 @@ impl Config {
             convert_to_cff: false,
             optimize_resources: false,
             remove_redundant_objects: false,
+            rebuild_content_streams: false,
             strip: Strip::NONE,
         }
     }
@@ -233,6 +236,7 @@ impl Config {
             convert_to_cff: true,
             optimize_resources: true,
             remove_redundant_objects: true,
+            rebuild_content_streams: true,
             strip: Strip::THREADS
                 | Strip::PIECE_INFO
                 | Strip::STRUCT_TREE
@@ -254,6 +258,7 @@ impl Config {
                 jpeg_quality: 75,
                 optimize_resources: true,
                 remove_redundant_objects: true,
+                rebuild_content_streams: true,
                 remove_standard_fonts: true,
                 subset_fonts: true,
                 ..Config::baseline()

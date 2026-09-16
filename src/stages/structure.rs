@@ -12,9 +12,13 @@ mod dedupe;
 mod resources;
 
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+use std::io::Write;
 
-use lopdf::{Document, Object, ObjectId};
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
+
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 
 use crate::pipeline::{Context, Stage};
 
@@ -31,6 +35,15 @@ impl Stage for CleanStructure {
             if removed > 0 {
                 ctx.report.note(format!(
                     "structure: removed {removed} unused resource entries"
+                ));
+            }
+        }
+        if ctx.config.rebuild_content_streams {
+            let done = rewrite_content_streams(doc);
+            if done.streams > 0 {
+                ctx.report.note(format!(
+                    "structure: re-serialized {} content streams, {} bytes smaller",
+                    done.streams, done.saved
                 ));
             }
         }
@@ -56,6 +69,92 @@ impl Stage for CleanStructure {
         bump_version(doc);
         Ok(())
     }
+}
+
+/// Streams larger than this are left alone by the content rewrite.
+const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+
+/// What the pass did: streams rewritten and bytes saved in their stored
+/// (compressed) form.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Rewrite {
+    streams: usize,
+    saved: usize,
+}
+
+/// Rewrite every page content, form, pattern and Type 3 glyph stream
+/// whose canonical form is smaller.
+fn rewrite_content_streams(doc: &mut Document) -> Rewrite {
+    let mut done = Rewrite::default();
+    for id in content_streams(doc) {
+        let Ok(Object::Stream(stream)) = doc.get_object(id) else {
+            continue;
+        };
+        let Some((candidate, saved)) = smaller_form(stream) else {
+            continue;
+        };
+        if let Ok(Object::Stream(stream)) = doc.get_object_mut(id) {
+            stream.set_plain_content(candidate);
+            stream.dict.set("Filter", "FlateDecode");
+            done.streams += 1;
+            done.saved += saved;
+        }
+    }
+    done
+}
+
+/// Every object that holds content-stream syntax, in a fixed order.
+fn content_streams(doc: &Document) -> BTreeSet<ObjectId> {
+    let mut ids = BTreeSet::new();
+    for page in doc.page_iter() {
+        ids.extend(doc.get_page_contents(page));
+    }
+    for (&id, obj) in &doc.objects {
+        match obj {
+            Object::Stream(s) if resources::is_form_or_pattern(&s.dict) => {
+                ids.insert(id);
+            }
+            Object::Dictionary(d) if resources::is_type3(d) => ids.extend(charprocs(d)),
+            _ => {}
+        }
+    }
+    ids
+}
+
+fn charprocs(font: &Dictionary) -> Vec<ObjectId> {
+    font.get(b"CharProcs")
+        .and_then(Object::as_dict)
+        .map(|procs| {
+            procs
+                .iter()
+                .filter_map(|(_, v)| v.as_reference().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The canonical form of a stream, Flate-compressed, when it is smaller
+/// than what is stored (or than the original compressed the same way, for
+/// a stream stored raw). Returns the bytes and the saving.
+fn smaller_form(stream: &Stream) -> Option<(Vec<u8>, usize)> {
+    let content = stream
+        .decompressed_content_with_limit(MAX_CONTENT_BYTES)
+        .ok()?;
+    let canonical = crate::content::canonical(&content)?;
+    let candidate = deflate(&canonical);
+    let stored = if stream.dict.has(b"Filter") {
+        stream.content.len()
+    } else {
+        deflate(&content).len()
+    };
+    let saved = stored.checked_sub(candidate.len()).filter(|s| *s > 0)?;
+    Some((candidate, saved))
+}
+
+fn deflate(data: &[u8]) -> Vec<u8> {
+    let mut enc = ZlibEncoder::new(Vec::with_capacity(data.len() / 2), Compression::best());
+    enc.write_all(data).ok();
+    enc.finish().unwrap_or_default()
 }
 
 /// Raise the header version to the minimum the content requires. Never
@@ -131,7 +230,7 @@ fn stream_uses_filter(obj: &Object, filter: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use lopdf::{Stream, dictionary};
+    use lopdf::dictionary;
 
     use super::*;
 
@@ -235,5 +334,48 @@ mod tests {
         let mut doc = doc_with_stream("1.3", "FlateDecode");
         bump_version(&mut doc);
         assert_eq!(doc.version, "1.3");
+    }
+
+    #[test]
+    fn rewrite_replaces_only_smaller_streams() {
+        let mut doc = Document::with_version("1.5");
+        let verbose =
+            b"q   1.00000 0.00000 0.00000 1.00000 0.00000 0.00000 cm   % identity\n/Im1 Do   Q\n"
+                .repeat(40);
+        let contents = doc.add_object(Stream::new(dictionary! {}, verbose));
+        let tight = doc.add_object(Stream::new(dictionary! {}, b"q Q".to_vec()));
+        let pages_id = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id,
+            "Contents" => vec![contents.into(), tight.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        let done = rewrite_content_streams(&mut doc);
+        assert_eq!(done.streams, 1);
+        assert!(done.saved > 0);
+        let Ok(Object::Stream(s)) = doc.get_object(contents) else {
+            panic!("stream");
+        };
+        assert_eq!(
+            s.dict.get(b"Filter").unwrap().as_name().unwrap(),
+            b"FlateDecode"
+        );
+        let text = s.decompressed_content().unwrap();
+        assert!(
+            text.starts_with(b"q 1 0 0 1 0 0 cm/Im1 Do Q q 1 0 0 1"),
+            "{}",
+            String::from_utf8_lossy(&text)
+        );
+        let Ok(Object::Stream(s)) = doc.get_object(tight) else {
+            panic!("stream");
+        };
+        assert!(!s.dict.has(b"Filter"));
     }
 }

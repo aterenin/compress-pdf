@@ -4,6 +4,7 @@
 //! of this crate. See CLAUDE.md for the design.
 
 pub mod config;
+pub mod content;
 pub mod font;
 pub mod pipeline;
 pub mod report;
