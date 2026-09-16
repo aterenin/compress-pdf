@@ -223,7 +223,7 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
     let pages_in = doc.get_pages().len();
 
     let mut report = Report::new(input.len());
-    if doc.trailer.has(b"Encrypt") {
+    if doc.trailer.has(b"Encrypt") || doc.was_encrypted() {
         // Encrypted input is out of scope for v1: the expected outcome is a
         // clean refusal, not an output file.
         return match pipeline::run(&mut doc, &Config::preset(preset), &mut report) {
@@ -236,7 +236,12 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
         // A page tree with kids the parser could not load is refused by
         // design (repair is out of scope); that refusal is the expected
         // outcome, the same as for encrypted input.
-        Err(e) if e.to_string() == pipeline::DAMAGED_PAGE_TREE => return Ok(()),
+        Err(e)
+            if e.to_string() == pipeline::DAMAGED_PAGE_TREE
+                || e.to_string() == pipeline::DAMAGED_RESOURCES =>
+        {
+            return Ok(());
+        }
         Err(e) => return Err(format!("pipeline failed: {e:#}").into()),
         Ok(()) => {}
     }
@@ -245,8 +250,11 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
         .map_err(|e| format!("serialize failed: {e:#}"))?;
     check_output(&input, &output, pages_in, &report)?;
     if render_enabled() && output != input {
-        let rendered =
-            verify::render::compare(&input, &output, preset).map_err(|e| format!("render: {e}"))?;
+        // An input the rasterizer cannot open is its problem, not ours.
+        let rendered = match verify::render::compare(&input, &output, preset) {
+            Err(e) if e.starts_with("input does not load") => return Ok(()),
+            other => other.map_err(|e| format!("render: {e}"))?,
+        };
         if !rendered.below_floor().is_empty() {
             return Err(format!("{rendered}").into());
         }

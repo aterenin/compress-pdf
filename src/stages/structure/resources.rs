@@ -164,9 +164,9 @@ fn inherited_resources(doc: &Document) -> HashSet<ResLoc> {
 /// decode or parse, which keeps its resources whole.
 fn owners(doc: &Document) -> Vec<(ResLoc, Option<Usage>)> {
     let mut out = Vec::new();
-    let type3_without_resources = type3_fonts_without_resources(doc);
+    let borrowers = resource_borrowers(doc);
     for page_id in doc.page_iter() {
-        let Some(loc) = page_resources(doc, page_id, &type3_without_resources) else {
+        let Some(loc) = page_resources(doc, page_id, &borrowers) else {
             continue;
         };
         out.push((
@@ -175,19 +175,18 @@ fn owners(doc: &Document) -> Vec<(ResLoc, Option<Usage>)> {
         ));
     }
     for (&id, obj) in &doc.objects {
-        match obj {
+        let (dict, usage) = match obj {
             Object::Stream(s) if is_form_or_pattern(&s.dict) => {
-                if let Some(loc) = res_loc(&s.dict, id) {
-                    let content = s.decompressed_content_with_limit(MAX_CONTENT_BYTES).ok();
-                    out.push((loc, content.and_then(|c| parse_usage(&c))));
-                }
+                let content = s.decompressed_content_with_limit(MAX_CONTENT_BYTES).ok();
+                (&s.dict, content.and_then(|c| parse_usage(&c)))
             }
-            Object::Dictionary(d) if is_type3(d) => {
-                if let Some(loc) = res_loc(d, id) {
-                    out.push((loc, parse_usage(&charprocs_content(doc, d))));
-                }
-            }
-            _ => {}
+            Object::Dictionary(d) if is_type3(d) => (d, parse_usage(&charprocs_content(doc, d))),
+            _ => continue,
+        };
+        if let Some(loc) = res_loc(dict, id)
+            && !lends_resources(doc, loc, &borrowers)
+        {
+            out.push((loc, usage));
         }
     }
     out
@@ -215,34 +214,44 @@ fn page_content(doc: &Document, page_id: ObjectId) -> Option<Vec<u8>> {
 fn page_resources(
     doc: &Document,
     page_id: ObjectId,
-    type3_without_resources: &HashSet<ObjectId>,
+    borrowers: &HashSet<ObjectId>,
 ) -> Option<ResLoc> {
     let page = doc.get_dictionary(page_id).ok()?;
     let loc = res_loc(page, page_id)?;
-    // A Type 3 font without resources draws its glyphs with this page's
-    // resources; we do not parse glyph procedures in that context.
-    let fonts = resources_dict(doc, loc)?.get(b"Font").ok()?;
-    let fonts = match fonts {
-        Object::Reference(id) => doc.get_dictionary(*id).ok()?,
-        Object::Dictionary(d) => d,
-        _ => return Some(loc),
-    };
-    let uses_bare_type3 = fonts
-        .iter()
-        .filter_map(|(_, v)| v.as_reference().ok())
-        .any(|id| type3_without_resources.contains(&id));
-    (!uses_bare_type3).then_some(loc)
+    (!lends_resources(doc, loc, borrowers)).then_some(loc)
 }
 
-fn type3_fonts_without_resources(doc: &Document) -> HashSet<ObjectId> {
+/// Objects that draw with their owner's resources instead of their own:
+/// Type 3 fonts, form XObjects and tiling patterns without a `/Resources`
+/// entry. Their content is not parsed in the owner's context, so an owner
+/// whose resources list one is left alone.
+fn resource_borrowers(doc: &Document) -> HashSet<ObjectId> {
     doc.objects
         .iter()
-        .filter(|(_, o)| {
-            o.as_dict()
-                .is_ok_and(|d| is_type3(d) && !d.has(b"Resources"))
+        .filter(|(_, o)| match o {
+            Object::Dictionary(d) => is_type3(d) && !d.has(b"Resources"),
+            Object::Stream(s) => is_form_or_pattern(&s.dict) && !s.dict.has(b"Resources"),
+            _ => false,
         })
         .map(|(&id, _)| id)
         .collect()
+}
+
+/// Whether any Font, XObject or Pattern entry at `loc` is a borrower.
+fn lends_resources(doc: &Document, loc: ResLoc, borrowers: &HashSet<ObjectId>) -> bool {
+    let Some(res) = resources_dict(doc, loc) else {
+        return false;
+    };
+    [&b"Font"[..], b"XObject", b"Pattern"]
+        .iter()
+        .filter_map(|cat| res.get(cat).ok())
+        .filter_map(|cat| match cat {
+            Object::Reference(id) => doc.get_dictionary(*id).ok(),
+            Object::Dictionary(d) => Some(d),
+            _ => None,
+        })
+        .flat_map(|d| d.iter().filter_map(|(_, v)| v.as_reference().ok()))
+        .any(|id| borrowers.contains(&id))
 }
 
 fn is_type3(d: &Dictionary) -> bool {
@@ -313,7 +322,10 @@ fn owner_dict(doc: &Document, id: ObjectId) -> Option<&Dictionary> {
 
 /// Names used by a content stream, or `None` if it cannot be trusted.
 fn parse_usage(content: &[u8]) -> Option<Usage> {
-    let ops = Content::decode(content).ok()?;
+    // Strict: lopdf's lenient parser stops silently at a malformed token
+    // (`-.` as a number has been seen), and a truncated operation list
+    // would read as "nothing after this point is used".
+    let ops = Content::decode_strict(content).ok()?;
     let mut usage = Usage::default();
     for op in &ops.operations {
         record(op, &mut usage);
@@ -536,6 +548,40 @@ mod tests {
         assert_eq!(prune_unused(&mut doc, &HashSet::new()), 2);
         assert_eq!(resource_names(&doc, page, b"Font"), ["F1"]);
         assert_eq!(resource_names(&doc, page, b"XObject"), ["Im2"]);
+    }
+
+    #[test]
+    fn malformed_content_keeps_the_owner_whole() {
+        // `-.` is not a number; a lenient parse would stop there and read
+        // the rest of the stream as unused.
+        let (mut doc, page) = page_doc(b"-. 0 Td BT /F1 12 Tf (x) Tj ET q /Im2 Do Q");
+        assert_eq!(prune_unused(&mut doc, &HashSet::new()), 0);
+        assert_eq!(resource_names(&doc, page, b"Font"), ["F1", "F2"]);
+    }
+
+    #[test]
+    fn a_form_without_resources_keeps_its_owner_whole() {
+        // The form draws Im1 with the page's resources (not allowed by the
+        // specification, honored by viewers): nothing may be removed.
+        let (mut doc, page) = page_doc(b"q /Fx Do Q");
+        let form = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 1.into(), 1.into()] },
+            b"/Im1 Do".to_vec(),
+        ));
+        doc.get_dictionary_mut(page)
+            .unwrap()
+            .get_mut(b"Resources")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .get_mut(b"XObject")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("Fx", form);
+        assert_eq!(prune_unused(&mut doc, &HashSet::new()), 0);
+        assert_eq!(resource_names(&doc, page, b"Font"), ["F1", "F2"]);
     }
 
     #[test]

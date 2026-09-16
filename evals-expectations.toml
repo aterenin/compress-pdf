@@ -161,3 +161,40 @@ reason = "damaged file: hayro-syntax repairs the input but lopdf loads a broken 
 [[expect]]
 file = "verapdf/Isartor test files/PDFA-1b/6.1 File structure/6.1.7 Stream objects/isartor-6-1-7-t02-fail-a.pdf"
 reason = "lopdf's loader drops a stream object with a wrong /Length, so the output loses page content; verify blocks it (input decodes with hayro-syntax)"
+
+[[expect]]
+file = "pdfjs-linked/bpl13210.pdf"
+reason = "page 297 is a chart of halftone fill patterns at 600 dpi; downsampling the bitonal image to 150 dpi aliases them (SSIM 0.90), which is the intended trade of the standard preset, not content loss"
+
+[[expect]]
+file = "pdfjs-linked/issue6289.pdf"
+reason = "16-bit CMYK image that the rasterizers used for comparison mishandle in the input (an X appears); the 8-bit output renders correctly, so the comparison scores it as a change"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue2537r.pdf"
+reason = "hayro draws the input's CIDFontType2 glyphs as notdef boxes and the subset output as nothing; poppler renders input and output identically (LINE UP)"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue1293r.pdf"
+reason = "content stream without a Length that lopdf reads as empty; refused as damaged input (the render check would otherwise flag a blank page)"
+
+[[expect]]
+file = "pdfjs/test/pdfs/ContentStreamCycleType3insideType3.pdf"
+reason = "Type 3 glyph procedures that draw each other in a cycle: hayro recurses without bound when rendering (stack overflow on the main thread, a timeout on the harness's large stack); the pipeline itself handles the file"
+
+[[expect]]
+file = "pdfjs-linked/issue8078.pdf"
+reason = "rendering with hayro needs more than 19 GB (146,094 filtered inline images per page) and is killed; the pipeline itself handles the file"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue16263.pdf"
+reason = "rendering with hayro needs about 19 GB (tiling pattern); passes alone (SSIM 1.0) but starves a parallel corpus run"
+
+[[expect]]
+file = "pdfjs/test/pdfs/issue19517.pdf"
+reason = "rendering with hayro needs about 14 GB; passes alone (SSIM 1.0) but starves a parallel corpus run"
+
+[[expect]]
+file = "pdfjs/test/pdfs/tiling-pattern-large-steps.pdf"
+reason = "rendering with hayro needs about 19 GB (tiling pattern with large steps); passes alone (SSIM 1.0) but starves a parallel corpus run"
+

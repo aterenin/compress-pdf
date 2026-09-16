@@ -136,11 +136,15 @@ pub fn used(
         (Kind::TrueType | Kind::OpenType, Addressing::Cid { cmap, cid_to_gid }) => {
             let face = read_fonts::FontRef::new(program).ok()?;
             let cff = cff_table(&face);
+            // A CIDFontType2 addresses glyphs through `CIDToGIDMap` even
+            // when the OpenType program holds CFF outlines; a CIDFontType0
+            // goes through the CFF charset. The dictionary's subtype is not
+            // known here, so both are kept.
             for cid in cids(cmap, strings) {
-                out.insert(match &cff {
-                    Some(cff) => cid_gid(cff, cid_to_gid, cid)?,
-                    None => plain_cid_gid(cid_to_gid, cid),
-                });
+                out.insert(plain_cid_gid(cid_to_gid, cid));
+                if let Some(cff) = &cff {
+                    out.insert(cid_gid(cff, cid_to_gid, cid)?);
+                }
             }
             u32::from(face.maxp().ok()?.num_glyphs())
         }

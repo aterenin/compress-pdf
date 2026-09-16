@@ -25,6 +25,11 @@ pub const DPI: f32 = 72.0;
 /// the comparison to mean something.
 const MIN_SIDE: f32 = 128.0;
 
+/// Pixels a rendered page may have at most; a page with an enormous media
+/// box is scaled down to fit, since the comparison is about layout and
+/// content, not resolution, and both documents render at the same scale.
+const MAX_PIXELS: f32 = 4_000_000.0;
+
 /// SSIM a page must reach for a preset's output to count as faithful.
 /// Provisional: set from the corpus and probes, to be revisited against
 /// reference outputs.
@@ -110,7 +115,9 @@ pub fn compare(input: &[u8], output: &[u8], preset: Preset) -> Result<Comparison
 /// as a structural change while a missing or shifted element still does.
 fn render_gray(page: &Page<'_>) -> Gray {
     let (w, h) = page.render_dimensions();
-    let scale = (DPI / 72.0).max(MIN_SIDE / w.min(h).max(1.0));
+    let scale = (DPI / 72.0)
+        .max(MIN_SIDE / w.min(h).max(1.0))
+        .min((MAX_PIXELS / (w * h).max(1.0)).sqrt());
     let settings = RenderSettings {
         x_scale: scale,
         y_scale: scale,

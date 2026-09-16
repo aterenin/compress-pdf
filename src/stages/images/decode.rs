@@ -44,7 +44,7 @@ pub fn decode(doc: &Document, stream: &Stream, info: &ImageInfo) -> Result<Raste
     }
     match info.image_codec() {
         None => decode_samples(stream, info),
-        Some("DCTDecode") => decode_jpeg(stream, info),
+        Some("DCTDecode") => decode_jpeg(stream, info, color_transform(doc, stream, info)),
         Some("CCITTFaxDecode") => {
             let data = codestream(stream, info)?;
             let parms = codec_parms(doc, stream, info);
@@ -109,15 +109,38 @@ fn direct_entry(doc: &Document, dict: &Dictionary, key: &[u8]) -> Option<Object>
 /// wins (the dictionary may omit one); images with an alpha channel are
 /// left alone because `SMaskInData` semantics are not implemented.
 fn decode_jpx(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
-    use hayro_jpeg2000::{ColorSpace as JpxColor, DecodeSettings, Image};
+    use hayro_jpeg2000::{DecodeSettings, Image};
+    if matches!(
+        info.color,
+        ColorSpace::Indexed { .. } | ColorSpace::Mapped { .. }
+    ) {
+        // The samples are palette indices or tint values, not colors.
+        return Err(Skip::new("JPX in an indexed or mapped color space"));
+    }
     let data = codestream(stream, info)?;
     let image = Image::new(&data, &DecodeSettings::default())
         .map_err(|e| Skip::new(format!("JPX does not decode: {e:?}")))?;
+    let format = jpx_format(&image, info)?;
+    let pixels = image
+        .decode()
+        .map_err(|e| Skip::new(format!("JPX does not decode: {e:?}")))?;
+    Raster::new(info.width, info.height, format, pixels)
+        .ok_or_else(|| Skip::new("JPX sample count mismatch"))
+}
+
+/// The raster format a decoded JPX yields, after the checks that make it
+/// usable: no alpha, the dictionary's size, a known color space with a
+/// channel count the dictionary's color space agrees with.
+fn jpx_format(image: &hayro_jpeg2000::Image, info: &ImageInfo) -> Result<Format, Skip> {
+    use hayro_jpeg2000::ColorSpace as JpxColor;
     if image.has_alpha() {
         return Err(Skip::new("JPX with an alpha channel"));
     }
     if (image.width(), image.height()) != (info.width, info.height) {
         return Err(Skip::new("JPX size differs from the dictionary"));
+    }
+    if matches!(image.color_space(), JpxColor::Unknown { .. }) {
+        return Err(Skip::new("JPX with an unknown color space"));
     }
     let format = match image.color_space().num_channels() {
         1 => Format::Gray8,
@@ -125,9 +148,6 @@ fn decode_jpx(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
         4 => Format::Cmyk8,
         n => return Err(Skip::new(format!("JPX with {n} channels"))),
     };
-    if matches!(image.color_space(), JpxColor::Unknown { .. }) {
-        return Err(Skip::new("JPX with an unknown color space"));
-    }
     if let ColorSpace::Device(model) = info.color
         && classify::components(model) != format.samples_per_pixel()
     {
@@ -135,11 +155,7 @@ fn decode_jpx(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
             "JPX channels differ from the dictionary color space",
         ));
     }
-    let pixels = image
-        .decode()
-        .map_err(|e| Skip::new(format!("JPX does not decode: {e:?}")))?;
-    Raster::new(info.width, info.height, format, pixels)
-        .ok_or_else(|| Skip::new("JPX sample count mismatch"))
+    Ok(format)
 }
 
 /// The `DecodeParms` entry that belongs to the image codec (the last
@@ -159,6 +175,15 @@ fn codec_parms(doc: &Document, stream: &Stream, info: &ImageInfo) -> Option<Dict
     };
     let entry = doc.dereference(entry).map(|(_, o)| o).unwrap_or(entry);
     entry.as_dict().ok().cloned()
+}
+
+/// The `ColorTransform` decode parameter of a DCT stream, when given.
+fn color_transform(doc: &Document, stream: &Stream, info: &ImageInfo) -> Option<i64> {
+    codec_parms(doc, stream, info)?
+        .get(b"ColorTransform")
+        .ok()?
+        .as_i64()
+        .ok()
 }
 
 fn jbig2_globals(doc: &Document, parms: Option<&Dictionary>) -> Option<Vec<u8>> {
@@ -183,7 +208,7 @@ fn decode_mapped(
     let mapping = Mapping::build(doc, source)
         .ok_or_else(|| Skip::new("tint transform or Lab dictionary does not parse"))?;
     let n = mapping.components;
-    let (rows, bpc) = mapped_rows(stream, info, n)?;
+    let (rows, bpc) = mapped_rows(stream, info, n, color_transform(doc, stream, info))?;
     let decode = info
         .decode
         .clone()
@@ -210,7 +235,12 @@ fn decode_mapped(
 
 /// The stored samples of a mapped image and their depth: packed at the
 /// dictionary's depth, or one byte per sample out of a JPEG.
-fn mapped_rows(stream: &Stream, info: &ImageInfo, n: usize) -> Result<(Rows, u8), Skip> {
+fn mapped_rows(
+    stream: &Stream,
+    info: &ImageInfo,
+    n: usize,
+    transform: Option<i64>,
+) -> Result<(Rows, u8), Skip> {
     match info.image_codec() {
         None => {
             let data = stream
@@ -229,7 +259,10 @@ fn mapped_rows(stream: &Stream, info: &ImageInfo, n: usize) -> Result<(Rows, u8)
                 4 => ColorModel::Cmyk,
                 _ => return Err(Skip::new(format!("JPEG with {n} components"))),
             };
-            Ok((Rows::Bytes(jpeg_raster(stream, info, model)?.data), 8))
+            Ok((
+                Rows::Bytes(jpeg_raster(stream, info, model, transform)?.data),
+                8,
+            ))
         }
         Some(codec) => Err(Skip::new(format!("{codec} in a mapped color space"))),
     }
@@ -473,15 +506,24 @@ pub fn codestream(stream: &Stream, info: &ImageInfo) -> Result<Vec<u8>, Skip> {
 
 // ----------------------------------------------------------------- JPEG
 
-fn decode_jpeg(stream: &Stream, info: &ImageInfo) -> Result<Raster, Skip> {
+/// `transform` is the `ColorTransform` decode parameter: 0 says a
+/// three-component codestream holds RGB rather than YCbCr (and a
+/// four-component one CMYK rather than YCCK), unless an Adobe marker in
+/// the codestream says otherwise.
+fn decode_jpeg(stream: &Stream, info: &ImageInfo, transform: Option<i64>) -> Result<Raster, Skip> {
     let ColorSpace::Device(model) = info.color else {
         return Err(Skip::new("JPEG in an unsupported color space"));
     };
-    apply_decode(jpeg_raster(stream, info, model)?, info)
+    apply_decode(jpeg_raster(stream, info, model, transform)?, info)
 }
 
 /// Decode the JPEG codestream into the raster format `model` implies.
-fn jpeg_raster(stream: &Stream, info: &ImageInfo, model: ColorModel) -> Result<Raster, Skip> {
+fn jpeg_raster(
+    stream: &Stream,
+    info: &ImageInfo,
+    model: ColorModel,
+    transform: Option<i64>,
+) -> Result<Raster, Skip> {
     let data = codestream(stream, info)?;
     let options = DecoderOptions::new_safe()
         .set_max_width(1 << 16)
@@ -493,7 +535,16 @@ fn jpeg_raster(stream: &Stream, info: &ImageInfo, model: ColorModel) -> Result<R
     let input = decoder
         .input_colorspace()
         .ok_or_else(|| Skip::new("JPEG header missing"))?;
-    let (out, format) = jpeg_output(model, input)?;
+    let (mut out, format) = jpeg_output(model, input)?;
+    if transform.is_some() && !has_adobe_marker(&data) {
+        if transform == Some(0) && input == ZColor::YCbCr && out == ZColor::RGB {
+            // The components are RGB already; asking for the codestream's own
+            // space makes the decoder copy them through untransformed.
+            out = ZColor::YCbCr;
+        } else if transform == Some(1) && input == ZColor::CMYK {
+            return Err(Skip::new("JPEG declared YCCK by its decode parameters"));
+        }
+    }
     decoder.set_options(
         DecoderOptions::new_safe()
             .jpeg_set_out_colorspace(out)
@@ -514,6 +565,26 @@ fn jpeg_raster(stream: &Stream, info: &ImageInfo, model: ColorModel) -> Result<R
         ycck_to_cmyk(&mut pixels);
     }
     Raster::new(w, h, format, pixels).ok_or_else(|| Skip::new("JPEG sample count mismatch"))
+}
+
+/// Whether the codestream carries an Adobe APP14 segment, whose transform
+/// flag takes precedence over the `ColorTransform` decode parameter.
+fn has_adobe_marker(data: &[u8]) -> bool {
+    let mut i = 2;
+    while i + 4 <= data.len() && data[i] == 0xFF {
+        let (marker, len) = (
+            data[i + 1],
+            usize::from(u16::from_be_bytes([data[i + 2], data[i + 3]])),
+        );
+        if marker == 0xDA {
+            return false;
+        }
+        if marker == 0xEE && data.get(i + 4..i + 9) == Some(b"Adobe") {
+            return true;
+        }
+        i += 2 + len;
+    }
+    false
 }
 
 /// Output color space to request from the decoder and the raster format
@@ -547,6 +618,22 @@ mod tests {
     use lopdf::dictionary;
 
     use super::*;
+
+    #[test]
+    fn adobe_marker_is_found_before_the_scan_only() {
+        let jfif = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x4A, 0x46, 0xFF, 0xDA, 0x00, 0x02,
+        ];
+        assert!(!has_adobe_marker(&jfif));
+        let mut adobe = vec![0xFF, 0xD8, 0xFF, 0xEE, 0x00, 0x0E];
+        adobe.extend_from_slice(b"Adobe");
+        adobe.extend_from_slice(&[0; 7]);
+        adobe.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02]);
+        assert!(has_adobe_marker(&adobe));
+        let mut after_scan = jfif.to_vec();
+        after_scan.extend_from_slice(&adobe[2..]);
+        assert!(!has_adobe_marker(&after_scan));
+    }
 
     fn info(width: u32, height: u32, bpc: u8, color: ColorSpace) -> ImageInfo {
         ImageInfo {

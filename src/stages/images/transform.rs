@@ -205,7 +205,9 @@ fn resize(raster: &Raster, width: u32, height: u32, alg: ResizeAlg) -> Option<Ra
     let src =
         Image::from_vec_u8(raster.width, raster.height, raster.data.clone(), pixel_type).ok()?;
     let mut dst = Image::new(width, height, pixel_type);
-    let options = ResizeOptions::new().resize_alg(alg);
+    // Four channels are CMYK here, not RGBA: the resizer must not treat
+    // the last one as alpha and premultiply the others by it (its default).
+    let options = ResizeOptions::new().resize_alg(alg).use_alpha(false);
     Resizer::new().resize(&src, &mut dst, &options).ok()?;
     Raster::new(width, height, raster.format, dst.into_vec())
 }
@@ -437,6 +439,19 @@ fn bitonal_if_two_level(raster: &Raster) -> Option<Raster> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmyk_downsample_keeps_ink_where_black_is_absent() {
+        // Cyan everywhere, no black: treating K as alpha would drop the cyan.
+        let data: Vec<u8> = [200, 0, 0, 0].repeat(16);
+        let r = Raster::new(4, 4, Format::Cmyk8, data).unwrap();
+        let d = downsample(&r, 2, 2).unwrap();
+        assert!(
+            d.data.chunks(4).all(|px| px[0] >= 190 && px[3] == 0),
+            "{:?}",
+            d.data
+        );
+    }
 
     #[test]
     fn gray_downsample_averages() {

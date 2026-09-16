@@ -51,7 +51,7 @@ impl CMap {
 
     /// Parse an embedded CMap stream's content.
     pub fn parse(content: &[u8]) -> Option<CMap> {
-        let ops = Content::decode(content).ok()?;
+        let ops = Content::decode_strict(content).ok()?;
         let mut cmap = CMap {
             codespaces: Vec::new(),
             ranges: Vec::new(),
@@ -66,11 +66,14 @@ impl CMap {
                         cmap.codespaces.push(Codespace { bytes, low, high });
                     }
                 }
-                "endcidrange" => {
+                // `bfrange` and `bfchar` belong in ToUnicode CMaps, but
+                // producers use them in encoding CMaps too, with the
+                // destination string read as a big-endian CID.
+                "endcidrange" | "endbfrange" => {
                     for triple in op.operands.as_chunks::<3>().0 {
                         let (low, bytes) = code_bytes(&triple[0])?;
                         let (high, _) = code_bytes(&triple[1])?;
-                        let cid = triple[2].as_i64().ok()? as u32;
+                        let cid = cid_operand(&triple[2])?;
                         cmap.ranges.push(Range {
                             bytes,
                             low,
@@ -79,10 +82,10 @@ impl CMap {
                         });
                     }
                 }
-                "endcidchar" => {
+                "endcidchar" | "endbfchar" => {
                     for pair in op.operands.as_chunks::<2>().0 {
                         let (code, bytes) = code_bytes(&pair[0])?;
-                        let cid = pair[1].as_i64().ok()? as u32;
+                        let cid = cid_operand(&pair[1])?;
                         cmap.ranges.push(Range {
                             bytes,
                             low: code,
@@ -175,6 +178,15 @@ impl CMap {
 }
 
 /// A code given as a PDF string: its value and byte length.
+/// A CID operand: an integer, or a string holding one big-endian.
+fn cid_operand(obj: &Object) -> Option<u32> {
+    match obj {
+        Object::Integer(i) => u32::try_from(*i).ok(),
+        Object::String(..) => code_bytes(obj).map(|(cid, _)| cid),
+        _ => None,
+    }
+}
+
 fn code_bytes(obj: &Object) -> Option<(u32, usize)> {
     let Object::String(bytes, _) = obj else {
         return None;
@@ -209,6 +221,15 @@ mod tests {
         // is in no codespace and maps to 0 as a one-byte code.
         assert_eq!(cmap.cids(&[0x41, 0x81, 0x42, 0x7f]), vec![34, 635, 999]);
         assert_eq!(cmap.cids(&[0x00]), vec![0]);
+    }
+
+    #[test]
+    fn bf_operators_map_to_cids_read_from_strings() {
+        let src = b"1 begincodespacerange <0000> <ffff> endcodespacerange
+            1 beginbfchar <0020> <0003> endbfchar
+            1 beginbfrange <0041> <005a> <0024> endbfrange";
+        let cmap = CMap::parse(src).unwrap();
+        assert_eq!(cmap.cids(&[0, 0x20, 0, 0x43]), vec![3, 0x26]);
     }
 
     #[test]

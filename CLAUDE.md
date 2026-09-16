@@ -368,9 +368,12 @@ PDF/A conformance preservation.
   run: its writer is a few percent less compact than good producers even
   with object streams packed at level 9 (the file-level never-grow rule
   absorbs this); it loads some damaged-xref files into a broken graph
-  without error; it cannot load 11 of 4,368 corpus files and hangs on one.
-  Revisit if repair of damaged files becomes a goal; the `Stage` trait would
-  not change.
+  without error; it cannot load 11 of 4,368 corpus files and hangs on one;
+  it decodes a stream with an empty `Filter` array to nothing, reads a
+  stream without `Length` as empty, and its lenient content parser stops
+  silently at a malformed token (each worked around in `pipeline` and by
+  strict parsing). Revisit if repair of damaged files becomes a goal; the
+  `Stage` trait would not change.
 - JPX decoding uses `hayro-jpeg2000` (pure Rust), which arrives with
   `hayro-syntax` and is exercised on every image the verify step checks. It
   decoded all 51 JPX-bearing corpus files without regressions. With this the
@@ -406,8 +409,11 @@ Fixed for v1 and expected to be revisited against evals results.
 - Bitonal downsampling: area-average the bits to gray, then give a pixel
   the ink color (the minority color of the image) when the ink covers at
   least 30 percent of it. Mid-gray thresholding erased one-pixel features
-  in a 2x reduction; this keeps them at the cost of thickening. What a
-  reference does here is unknown.
+  in a 2x reduction; this keeps them at the cost of thickening. Halftone
+  fill patterns (regular dot screens at 600 dpi) alias under a 4x
+  reduction either way; converting such regions to gray would be MRC-style
+  segmentation, which is out of scope. What a reference does here is
+  unknown.
 - JBIG2 mode: generic-region coding, lossless. The available encoder's symbol
   mode substitutes glyphs (lossy) and has no refinement, so it is not used.
   Revisit when a lossless symbol mode exists or the evals show generic
@@ -444,22 +450,41 @@ presets (78 trials, about two seconds) with the four structural invariants;
 the render-based check is not wired in yet. `src/verify.rs` implements the
 structural level with `hayro-syntax`, with the input as baseline; `main`
 refuses to write on regressions and the harness fails on them. Encrypted
-input is refused by `pipeline::run`, and so is a page tree with kids the
-parser could not load (writing such a file would drop the page while the
-count still added up); the harness treats both refusals as the expected
-outcome. The full corpus (`EVALS_SUBSET=full`, standard
-preset, release build) runs in about 20 seconds; `evals-expectations.toml`
-lists 39 files: ones lopdf cannot load, loads into a broken graph, or hangs
-on, plus two where its loader drops a stream with a wrong `/Length` and
-verification blocks the resulting content loss. Stages:
+input is refused by `pipeline::run` (lopdf decrypts on load and drops the
+trailer entry, so `was_encrypted` is checked too), and so is damaged input
+the parser loaded silently short: a page tree with kids it could not load,
+a `Contents` or resource-category entry that refers to an object it could
+not load, or a content stream without a `Length` that it read as empty
+(writing such files would drop a page, an image, a font or the page's
+text while the page count still added up; viewers that rebuild the
+cross-reference table recover them). The harness treats these refusals as
+the expected outcome. Content streams are parsed strictly everywhere
+(`Content::decode_strict`): lopdf's lenient parser stops silently at a
+malformed token (`-.` as a number has been seen), and the usage walk and
+the resource pruning would both read a truncated operation list as "nothing
+after this point is used". A stream whose `Filter` is an empty array is
+normalized to no filter before the stages run, since lopdf decodes it to
+nothing. The full corpus (`EVALS_SUBSET=full`, standard preset, release
+build) runs in about 20 seconds without rendering and about 12 minutes
+with `EVALS_RENDER=1`; `evals-expectations.toml` lists 48 files: ones lopdf
+cannot load, loads into a broken graph, or hangs on, two where its loader
+drops a stream with a wrong `/Length` and verification blocks the
+resulting content loss, four where the render comparison flags a
+difference that is not content loss (halftone patterns aliased by
+downsampling, a 16-bit CMYK image the rasterizers mishandle in the input,
+a font hayro cannot draw), and five that hayro cannot render within
+reason (a Type 3 glyph cycle it recurses on without bound; tiling patterns
+and inline-image floods that take 14 to 19 GB, which starve a parallel
+corpus run even though they pass alone). Rendered pages are capped at four
+million pixels so a huge media box cannot do the same. Stages:
 
 | Stage | Status | Done when |
 |---|---|---|
 | usage | done: CTM and bounding-box clip walk over page content, form XObjects (with `/Matrix` and `/BBox`), tiling patterns, and annotation appearance streams; `ImageUsage` holds pixels, placements with rendered size and visible fraction, `min_dpi()` and `crop_box()`; tested for two placements, rectangular clip, `Q` restoring the clip, form matrices, and undrawn images | |
-| images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels skipped) via hayro's decoders; downsample per class rule (Lanczos3; nearest for indices; bitonal by area averaging then a threshold toward the ink color at 30 percent coverage, so thin lines thicken rather than vanish); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
-| fonts | third milestone: every embedded program gets a report row; Type 1 programs converted to CFF (`Type1C`) under the never-grow rule, then subset like any CFF; subsetting of TrueType, CFF, CIDFontType0C and OpenType programs with glyph IDs retained (HarfBuzz), driven by the strings the usage walk recorded, with the union of glyphs over every font dictionary sharing a program; programs of fonts a default appearance string names in the AcroForm default resources, of fonts in Type 3 resources, and of fonts the walk never saw, are left alone; the program stream is rewritten Flate-compressed under the never-grow rule and untagged fonts get a subset tag derived from the glyph set; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Only Type 1 programs whose conversion fails stay unconverted; those are reported. |
+| images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs, honoring the `ColorTransform` decode parameter when the codestream has no Adobe marker; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels, and indexed or mapped dictionary spaces, skipped) via hayro's decoders; CMYK rasters resized with alpha handling off, since the resizer would otherwise premultiply by the K channel; downsample per class rule (Lanczos3; nearest for indices; bitonal by area averaging then a threshold toward the ink color at 30 percent coverage, so thin lines thicken rather than vanish); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
+| fonts | third milestone: every embedded program gets a report row; Type 1 programs converted to CFF (`Type1C`) under the never-grow rule, then subset like any CFF; subsetting of TrueType, CFF, CIDFontType0C and OpenType programs with glyph IDs retained (HarfBuzz), driven by the strings the usage walk recorded, with the union of glyphs over every font dictionary sharing a program (for an OpenType program with CFF outlines under a CID font, both the `CIDToGIDMap` and the CFF charset readings are kept, since the subtype is not consulted; embedded CMaps may use `bfchar` and `bfrange`, read as CIDs); programs of fonts a default appearance string names in the AcroForm default resources, of fonts in Type 3 resources, and of fonts the walk never saw, are left alone; the program stream is rewritten Flate-compressed under the never-grow rule and untagged fonts get a subset tag derived from the glyph set; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Only Type 1 programs whose conversion fails stay unconverted; those are reported. |
 | strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
-| structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners that do not decode, inherited resources, and Type 3 fonts without resources are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, the AcroForm default resources treated as an owner whose content is the set of default appearance strings (fonts only; other categories kept whole; left alone entirely with an XFA entry), references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
+| structure | done except content-stream re-serialization: unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners whose content does not decode or parse strictly, inherited resources, and owners whose resources list a Type 3 font, form XObject or pattern without resources of its own, which draws with the owner's, are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, the AcroForm default resources treated as an owner whose content is the set of default appearance strings (fonts only; other categories kept whole; left alone entirely with an XFA entry), references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | Content streams re-serialized from parsed operators under the never-grow rule. |
 
 Implementation order was structure, strip, usage, then images, then fonts.
 This differs from pipeline order on purpose: structure and strip are cheap

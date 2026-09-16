@@ -69,7 +69,9 @@ impl<'a> Walker<'a> {
     }
 
     fn walk(&mut self, content: &[u8], chain: &Chain, initial: State) {
-        let Ok(ops) = Content::decode(content) else {
+        // Strict: a lenient parse stops silently at a malformed token, and
+        // the placements and strings after it would go unrecorded.
+        let Ok(ops) = Content::decode_strict(content) else {
             return;
         };
         let mut state = initial;
