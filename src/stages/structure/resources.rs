@@ -8,7 +8,12 @@
 //! does not parse, resources inherited from the page tree, and Type 3 fonts
 //! without their own resources (their glyph procedures draw with the page's).
 //! Inline images may name a color space resource, so the ColorSpace category
-//! is kept whole for any owner that contains one.
+//! is kept whole for any owner that contains one. An AcroForm's default
+//! resources (`/DR`) are an owner too, whose "content" is the set of default
+//! appearance strings: those select fonts by name and nothing else, so the
+//! other categories are kept whole; with an `/XFA` entry (an XFA engine may
+//! pick fonts by name) the dictionary is left alone entirely. Treating it as
+//! an owner is what keeps a `/DR` that doubles as a page's resources intact.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,6 +22,9 @@ use lopdf::{Dictionary, Document, Object, ObjectId};
 
 /// Streams larger than this are not parsed; their owners are left alone.
 const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Index of `Font` in [`CATEGORIES`].
+const FONT: usize = 5;
 
 const CATEGORIES: [&[u8]; 7] = [
     b"ExtGState",
@@ -35,6 +43,8 @@ enum ResLoc {
     Indirect(ObjectId),
     /// Inline in the owner's dictionary.
     InlineIn(ObjectId),
+    /// The AcroForm's `/DR`, inline in the AcroForm dictionary.
+    DefaultResources,
 }
 
 /// Where one category dictionary (e.g. `/Font`) lives.
@@ -52,22 +62,48 @@ struct Usage {
     keep_all: [bool; 7],
 }
 
-/// Fonts in an AcroForm's default resources (`/DR`) that no default
-/// appearance string names. Nothing else can select them: fields draw
-/// with the fonts their `/DA` strings name, and an XFA engine (which may
-/// pick fonts by name from the same dictionary) is ruled out by requiring
-/// that the document has no `/XFA` entry. Returns the number removed.
-pub fn prune_default_resource_fonts(doc: &mut Document, used: &HashSet<Vec<u8>>) -> usize {
-    let Some((at, doomed)) = default_resource_fonts_to_drop(doc, used) else {
-        return 0;
-    };
-    let Some(fonts) = dict_at_mut(doc, &at) else {
-        return 0;
-    };
-    for name in &doomed {
-        fonts.remove(name);
+/// Removes what no owner uses; `appearance_fonts` are the font names the
+/// default appearance strings select. Returns the number of entries removed.
+pub fn prune_unused(doc: &mut Document, appearance_fonts: &HashSet<Vec<u8>>) -> usize {
+    let mut usage: HashMap<ResLoc, Usage> = HashMap::new();
+    let mut skipped: HashSet<ResLoc> = inherited_resources(doc);
+    let mut owners = owners(doc);
+    owners.extend(default_resources(doc, appearance_fonts));
+    for (loc, u) in owners {
+        match u {
+            Some(u) => merge_usage(usage.entry(loc).or_default(), u),
+            None => {
+                skipped.insert(loc);
+            }
+        }
     }
-    doomed.len()
+    let plan = plan_removals(doc, &usage, &skipped);
+    apply_removals(doc, plan)
+}
+
+/// The AcroForm's `/DR` as an owner: fonts named by appearance strings are
+/// used, every other category is kept whole, and an XFA form keeps all of
+/// it (`None` usage, like an owner whose content does not parse).
+fn default_resources(
+    doc: &Document,
+    appearance_fonts: &HashSet<Vec<u8>>,
+) -> Option<(ResLoc, Option<Usage>)> {
+    let acro = dict_at(doc, &acro_form_path(doc)?)?;
+    let loc = match acro.get(b"DR").ok()? {
+        Object::Reference(id) => ResLoc::Indirect(*id),
+        Object::Dictionary(_) => ResLoc::DefaultResources,
+        _ => return None,
+    };
+    if acro.has(b"XFA") {
+        return Some((loc, None));
+    }
+    let mut usage = Usage {
+        names: Default::default(),
+        keep_all: [true; 7],
+    };
+    usage.keep_all[FONT] = false;
+    usage.names[FONT] = appearance_fonts.clone();
+    Some((loc, Some(usage)))
 }
 
 /// A dictionary reached from an object by a chain of inline keys.
@@ -76,37 +112,19 @@ struct DictPath {
     keys: Vec<Vec<u8>>,
 }
 
-fn default_resource_fonts_to_drop(
-    doc: &Document,
-    used: &HashSet<Vec<u8>>,
-) -> Option<(DictPath, Vec<Vec<u8>>)> {
+fn acro_form_path(doc: &Document) -> Option<DictPath> {
     let root = doc.trailer.get(b"Root").ok()?.as_reference().ok()?;
-    let mut at = DictPath {
-        base: root,
-        keys: Vec::new(),
-    };
-    for key in [&b"AcroForm"[..], b"DR", b"Font"] {
-        let dict = dict_at(doc, &at)?;
-        if key == b"DR" && dict.has(b"XFA") {
-            return None;
-        }
-        match dict.get(key).ok()? {
-            Object::Reference(id) => {
-                at = DictPath {
-                    base: *id,
-                    keys: Vec::new(),
-                }
-            }
-            Object::Dictionary(_) => at.keys.push(key.to_vec()),
-            _ => return None,
-        }
+    match doc.get_dictionary(root).ok()?.get(b"AcroForm").ok()? {
+        Object::Reference(id) => Some(DictPath {
+            base: *id,
+            keys: Vec::new(),
+        }),
+        Object::Dictionary(_) => Some(DictPath {
+            base: root,
+            keys: vec![b"AcroForm".to_vec()],
+        }),
+        _ => None,
     }
-    let doomed: Vec<Vec<u8>> = dict_at(doc, &at)?
-        .iter()
-        .filter(|(name, _)| !used.contains(*name))
-        .map(|(name, _)| name.clone())
-        .collect();
-    Some((at, doomed))
 }
 
 fn dict_at<'a>(doc: &'a Document, at: &DictPath) -> Option<&'a Dictionary> {
@@ -123,23 +141,6 @@ fn dict_at_mut<'a>(doc: &'a mut Document, at: &DictPath) -> Option<&'a mut Dicti
         dict = dict.get_mut(key).ok()?.as_dict_mut().ok()?;
     }
     Some(dict)
-}
-
-/// Returns the number of entries removed.
-pub fn prune_unused(doc: &mut Document) -> usize {
-    let protected = inherited_resources(doc);
-    let mut usage: HashMap<ResLoc, Usage> = HashMap::new();
-    let mut skipped: HashSet<ResLoc> = protected.clone();
-    for (loc, content) in owners(doc) {
-        match parse_usage(&content) {
-            Some(u) => merge_usage(usage.entry(loc).or_default(), u),
-            None => {
-                skipped.insert(loc);
-            }
-        }
-    }
-    let plan = plan_removals(doc, &usage, &skipped);
-    apply_removals(doc, plan)
 }
 
 /// Resources referenced from page-tree nodes are inherited by pages we do
@@ -159,33 +160,31 @@ fn inherited_resources(doc: &Document) -> HashSet<ResLoc> {
         .collect()
 }
 
-/// Every (resources location, content bytes) pair to analyze.
-fn owners(doc: &Document) -> Vec<(ResLoc, Vec<u8>)> {
+/// Every owner with what it uses; `None` usage when its content does not
+/// decode or parse, which keeps its resources whole.
+fn owners(doc: &Document) -> Vec<(ResLoc, Option<Usage>)> {
     let mut out = Vec::new();
     let type3_without_resources = type3_fonts_without_resources(doc);
     for page_id in doc.page_iter() {
         let Some(loc) = page_resources(doc, page_id, &type3_without_resources) else {
             continue;
         };
-        // A page whose content cannot be decoded is left alone (an empty
-        // usage set would strip everything); it is simply not an owner.
-        if let Some(content) = page_content(doc, page_id) {
-            out.push((loc, content));
-        }
+        out.push((
+            loc,
+            page_content(doc, page_id).and_then(|c| parse_usage(&c)),
+        ));
     }
     for (&id, obj) in &doc.objects {
         match obj {
             Object::Stream(s) if is_form_or_pattern(&s.dict) => {
-                if let (Some(loc), Ok(content)) = (
-                    res_loc(&s.dict, id),
-                    s.decompressed_content_with_limit(MAX_CONTENT_BYTES),
-                ) {
-                    out.push((loc, content));
+                if let Some(loc) = res_loc(&s.dict, id) {
+                    let content = s.decompressed_content_with_limit(MAX_CONTENT_BYTES).ok();
+                    out.push((loc, content.and_then(|c| parse_usage(&c))));
                 }
             }
             Object::Dictionary(d) if is_type3(d) => {
                 if let Some(loc) = res_loc(d, id) {
-                    out.push((loc, charprocs_content(doc, d)));
+                    out.push((loc, parse_usage(&charprocs_content(doc, d))));
                 }
             }
             _ => {}
@@ -294,6 +293,11 @@ fn resources_dict(doc: &Document, loc: ResLoc) -> Option<&Dictionary> {
             .ok()?
             .as_dict()
             .ok(),
+        ResLoc::DefaultResources => dict_at(doc, &acro_form_path(doc)?)?
+            .get(b"DR")
+            .ok()?
+            .as_dict()
+            .ok(),
     }
 }
 
@@ -334,7 +338,7 @@ fn record(op: &Operation, usage: &mut Usage) {
 fn resource_operand(op: &Operation) -> Option<(usize, usize)> {
     Some(match op.operator.as_str() {
         "Do" => (4, 0),
-        "Tf" => (5, 0),
+        "Tf" => (FONT, 0),
         "gs" => (0, 0),
         "cs" | "CS" => (1, 0),
         "scn" | "SCN" => (2, op.operands.len().checked_sub(1)?),
@@ -454,6 +458,14 @@ fn resources_dict_mut(doc: &mut Document, loc: ResLoc) -> Option<&mut Dictionary
             };
             dict.get_mut(b"Resources").ok()?.as_dict_mut().ok()
         }
+        ResLoc::DefaultResources => {
+            let at = acro_form_path(doc)?;
+            dict_at_mut(doc, &at)?
+                .get_mut(b"DR")
+                .ok()?
+                .as_dict_mut()
+                .ok()
+        }
     }
 }
 
@@ -521,7 +533,7 @@ mod tests {
     #[test]
     fn unused_entries_are_removed() {
         let (mut doc, page) = page_doc(b"BT /F1 12 Tf (x) Tj ET q /Im2 Do Q");
-        assert_eq!(prune_unused(&mut doc), 2);
+        assert_eq!(prune_unused(&mut doc, &HashSet::new()), 2);
         assert_eq!(resource_names(&doc, page, b"Font"), ["F1"]);
         assert_eq!(resource_names(&doc, page, b"XObject"), ["Im2"]);
     }
@@ -529,7 +541,7 @@ mod tests {
     #[test]
     fn nothing_used_removes_everything_in_touched_categories() {
         let (mut doc, page) = page_doc(b"0 0 m 1 1 l S");
-        assert_eq!(prune_unused(&mut doc), 4);
+        assert_eq!(prune_unused(&mut doc, &HashSet::new()), 4);
         assert!(resource_names(&doc, page, b"Font").is_empty());
     }
 
@@ -547,7 +559,7 @@ mod tests {
             "ColorSpace",
             dictionary! { "CS0" => "DeviceGray", "CS1" => "DeviceRGB" },
         );
-        prune_unused(&mut doc);
+        prune_unused(&mut doc, &HashSet::new());
         assert_eq!(resource_names(&doc, page, b"ColorSpace"), ["CS0", "CS1"]);
     }
 
@@ -571,6 +583,6 @@ mod tests {
         doc.get_dictionary_mut(pages_id)
             .unwrap()
             .set("Resources", res_id);
-        assert_eq!(prune_unused(&mut doc), 0);
+        assert_eq!(prune_unused(&mut doc, &HashSet::new()), 0);
     }
 }

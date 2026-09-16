@@ -284,4 +284,6 @@ fn default_resource_fonts_are_pruned_unless_xfa() {
     assert_eq!(dr_fonts(&doc), vec![b"Helv".to_vec()]);
     let (doc, _) = run(generators::form_default_fonts(true), Preset::Standard);
     assert_eq!(dr_fonts(&doc), vec![b"Cour".to_vec(), b"Helv".to_vec()]);
+    let (doc, _) = run(generators::form_shared_fonts(), Preset::Standard);
+    assert_eq!(dr_fonts(&doc), vec![b"Cour".to_vec(), b"Helv".to_vec()]);
 }

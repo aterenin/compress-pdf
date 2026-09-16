@@ -27,8 +27,7 @@ impl Stage for CleanStructure {
 
     fn run(&self, doc: &mut Document, ctx: &mut Context<'_>) -> Result<()> {
         if ctx.config.optimize_resources {
-            let removed = resources::prune_unused(doc)
-                + resources::prune_default_resource_fonts(doc, &ctx.usage.appearance_fonts);
+            let removed = resources::prune_unused(doc, &ctx.usage.appearance_fonts);
             if removed > 0 {
                 ctx.report.note(format!(
                     "structure: removed {removed} unused resource entries"
@@ -188,12 +187,36 @@ mod tests {
     fn default_resource_fonts_no_appearance_names_are_dropped() {
         let (mut doc, fonts) = doc_with_form(false, "/Helv 12 Tf 0 g");
         let used = HashSet::from([b"Helv".to_vec()]);
-        assert_eq!(resources::prune_default_resource_fonts(&mut doc, &used), 1);
+        assert_eq!(resources::prune_unused(&mut doc, &used), 1);
         let dict = doc.get_dictionary(fonts).unwrap();
         assert!(dict.has(b"Helv") && !dict.has(b"Cour"));
         // An XFA form may pick fonts by name: nothing is dropped.
         let (mut doc, fonts) = doc_with_form(true, "/Helv 12 Tf 0 g");
-        assert_eq!(resources::prune_default_resource_fonts(&mut doc, &used), 0);
+        assert_eq!(resources::prune_unused(&mut doc, &used), 0);
+        assert!(doc.get_dictionary(fonts).unwrap().has(b"Cour"));
+    }
+
+    #[test]
+    fn default_resource_fonts_shared_with_a_page_are_kept() {
+        // The font dictionary doubles as a page's resources: content, not
+        // only appearance strings, selects from it.
+        let (mut doc, fonts) = doc_with_form(false, "/Helv 12 Tf 0 g");
+        let contents = doc.add_object(Stream::new(dictionary! {}, b"/Cour 1 Tf".to_vec()));
+        let pages_id = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => contents,
+            "Resources" => dictionary! { "Font" => fonts },
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        doc.get_dictionary_mut(root).unwrap().set("Pages", pages_id);
+        let used = HashSet::from([b"Helv".to_vec()]);
+        assert_eq!(resources::prune_unused(&mut doc, &used), 0);
         assert!(doc.get_dictionary(fonts).unwrap().has(b"Cour"));
     }
 

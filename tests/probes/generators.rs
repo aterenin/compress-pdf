@@ -91,6 +91,11 @@ pub fn all() -> Vec<Probe> {
             about: "the same form with an XFA entry, whose fonts an XFA engine may use",
             doc: form_default_fonts(true),
         },
+        Probe {
+            name: "shared-default-fonts",
+            about: "a form whose default resources are also the page's resources; page text uses a font no appearance string names",
+            doc: form_shared_fonts(),
+        },
     ]
 }
 
@@ -606,6 +611,33 @@ pub fn form_default_fonts(xfa: bool) -> Document {
     }
     let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
     doc.get_dictionary_mut(root).unwrap().set("AcroForm", acro);
+    doc
+}
+
+/// A form whose `/DR` is the page's `/Resources` object (a common
+/// producer shortcut): the page draws text with a font no `/DA` names.
+pub fn form_shared_fonts() -> Document {
+    let mut doc = form_default_fonts(false);
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let acro = doc.get_dictionary(root).unwrap().get(b"AcroForm").unwrap();
+    let dr = acro.as_dict().unwrap().get(b"DR").unwrap().clone();
+    let resources = doc.add_object(dr);
+    let content = doc.add_object(Stream::new(
+        dictionary! {},
+        b"BT /Cour 48 Tf 40 100 Td (abc) Tj ET".to_vec(),
+    ));
+    let page = doc.get_pages()[&1];
+    let page_dict = doc.get_dictionary_mut(page).unwrap();
+    page_dict.set("Resources", resources);
+    page_dict.set("Contents", content);
+    let acro = doc
+        .get_dictionary_mut(root)
+        .unwrap()
+        .get_mut(b"AcroForm")
+        .unwrap()
+        .as_dict_mut()
+        .unwrap();
+    acro.set("DR", resources);
     doc
 }
 
