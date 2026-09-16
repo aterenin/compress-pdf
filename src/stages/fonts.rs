@@ -20,7 +20,7 @@ use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
 use crate::config::Config;
 use crate::font::cmap::CMap;
 use crate::font::glyphs::{self, Addressing, Base, CidToGid, Kind, SimpleEncoding};
-use crate::font::{convert, std14, subset};
+use crate::font::{convert, sfnt, std14, subset};
 use crate::pipeline::{Context, Stage};
 use crate::report::FontRow;
 use crate::stages::usage::TextUsage;
@@ -401,9 +401,12 @@ fn load_program(
     let Ok(Object::Stream(stream)) = doc.get_object(program.id) else {
         return Err(Outcome::kept("program is not a stream"));
     };
-    let Ok(data) = stream.decompressed_content() else {
+    let Ok(mut data) = stream.decompressed_content() else {
         return Err(Outcome::kept("program does not decompress"));
     };
+    if kind != Kind::Cff {
+        sfnt::normalize(&mut data);
+    }
     Ok(Loaded {
         kind,
         data,

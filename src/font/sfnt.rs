@@ -29,18 +29,95 @@ pub fn wrap_cff(cff: &[u8]) -> Option<Vec<u8>> {
 
 /// The `CFF ` table of an OpenType font, or `None` when there is none.
 pub fn unwrap_cff(sfnt: &[u8]) -> Option<Vec<u8>> {
-    let num_tables = usize::from(u16::from_be_bytes(sfnt.get(4..6)?.try_into().ok()?));
-    for i in 0..num_tables {
-        let rec = sfnt.get(12 + 16 * i..12 + 16 * i + 16)?;
-        if &rec[..4] == b"CFF " {
-            let offset = u32::from_be_bytes(rec[8..12].try_into().ok()?) as usize;
-            let length = u32::from_be_bytes(rec[12..16].try_into().ok()?) as usize;
-            return sfnt
-                .get(offset..offset.checked_add(length)?)
-                .map(<[u8]>::to_vec);
-        }
+    table_range(sfnt, b"CFF ").map(|r| sfnt[r].to_vec())
+}
+
+/// Puts a TrueType or OpenType program into the shape the readers assume
+/// without changing any table's content: the directory sorted by tag with
+/// records that point outside the file dropped, `head` at version 1.0, and
+/// `maxp`'s glyph count no larger than `loca` provides for. Each of these
+/// was seen in the corpus (a producer that appends the `loca` and `glyf` it
+/// rewrote after the other tables, garbage records, a `head` version of
+/// 241, a glyph count six times the offsets), and each makes HarfBuzz and
+/// read-fonts, which look tables up by binary search and sanitize what
+/// they find, reject the whole font. Collections and truncated
+/// directories are left alone.
+pub fn normalize(data: &mut [u8]) {
+    if !is_sfnt(data) || data.starts_with(b"ttcf") {
+        return;
     }
-    None
+    let len = data.len();
+    let Some(count) = data.get(4..6) else {
+        return;
+    };
+    let num_tables = usize::from(u16::from_be_bytes([count[0], count[1]]));
+    let Some(directory) = data.get_mut(12..12 + 16 * num_tables) else {
+        return;
+    };
+    let (records, _) = directory.as_chunks_mut::<16>();
+    let mut kept: Vec<[u8; 16]> = records
+        .iter()
+        .copied()
+        .filter(|rec| record_range(rec).is_some_and(|r| r.end <= len))
+        .collect();
+    kept.sort_by(|a, b| a[..4].cmp(&b[..4]));
+    for (slot, rec) in records.iter_mut().zip(&kept) {
+        *slot = *rec;
+    }
+    data[4..6].copy_from_slice(&(kept.len() as u16).to_be_bytes());
+    repair_head_version(data);
+    cap_glyph_count(data);
+}
+
+/// The `head` table has only ever had version 1.0, and readers refuse
+/// any other major version.
+fn repair_head_version(data: &mut [u8]) {
+    if let Some(head) = table_range(data, b"head")
+        && head.len() >= 4
+        && data[head.start..head.start + 2] != [0, 1]
+    {
+        data[head.start..head.start + 4].copy_from_slice(&[0, 1, 0, 0]);
+    }
+}
+
+/// `maxp` may claim more glyphs than `loca` has offsets for; the extra
+/// glyph IDs have no outline either way.
+fn cap_glyph_count(data: &mut [u8]) {
+    let (Some(maxp), Some(head), Some(loca)) = (
+        table_range(data, b"maxp"),
+        table_range(data, b"head"),
+        table_range(data, b"loca"),
+    ) else {
+        return;
+    };
+    if maxp.len() < 6 || head.len() < 52 {
+        return;
+    }
+    let long_offsets = data[head.start + 50..head.start + 52] != [0, 0];
+    let entries = loca.len() / if long_offsets { 4 } else { 2 };
+    let claimed = u16::from_be_bytes([data[maxp.start + 4], data[maxp.start + 5]]);
+    if let Some(available) = entries.checked_sub(1).and_then(|n| u16::try_from(n).ok())
+        && claimed > available
+    {
+        data[maxp.start + 4..maxp.start + 6].copy_from_slice(&available.to_be_bytes());
+    }
+}
+
+/// The byte range a directory record points at.
+fn record_range(rec: &[u8]) -> Option<std::ops::Range<usize>> {
+    let offset = u32::from_be_bytes(rec.get(8..12)?.try_into().ok()?) as usize;
+    let length = u32::from_be_bytes(rec.get(12..16)?.try_into().ok()?) as usize;
+    Some(offset..offset.checked_add(length)?)
+}
+
+/// Where the table `tag` lives, from a scan of the directory.
+fn table_range(data: &[u8], tag: &[u8; 4]) -> Option<std::ops::Range<usize>> {
+    let num_tables = usize::from(u16::from_be_bytes(data.get(4..6)?.try_into().ok()?));
+    (0..num_tables)
+        .filter_map(|i| data.get(12 + 16 * i..28 + 16 * i))
+        .find(|rec| &rec[..4] == tag)
+        .and_then(record_range)
+        .filter(|r| r.end <= data.len())
 }
 
 /// Whether the bytes start like an OpenType font (TrueType, CFF-based
@@ -126,6 +203,55 @@ pub(crate) mod tests {
         cff[dict_start + 1..dict_start + 5].copy_from_slice(&charstrings_at.to_be_bytes());
         cff[dict_start + 10..dict_start + 14].copy_from_slice(&private_at.to_be_bytes());
         cff
+    }
+
+    #[test]
+    fn normalize_sorts_the_directory_and_repairs_the_counts() {
+        let mut head = [0u8; 54];
+        head[..2].copy_from_slice(&[0, 241]); // a head version no reader accepts
+        let maxp = [0, 1, 0, 0, 0, 9]; // claims 9 glyphs
+        let loca = [0u8; 8]; // short offsets: 4 entries, so 3 glyphs
+        let mut font = build(
+            0x0001_0000,
+            &[
+                (b"maxp", &maxp),
+                (b"loca", &loca),
+                (b"head", &head),
+                (b"junk", &[1; 4]),
+            ],
+        );
+        let junk = 12 + 16 * 3;
+        font[junk + 8..junk + 12].copy_from_slice(&u32::MAX.to_be_bytes()); // points outside
+        let tags = |f: &[u8]| {
+            let n = usize::from(f[5]);
+            (0..n)
+                .map(|i| f[12 + 16 * i..16 + 16 * i].to_vec())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tags(&font), [b"maxp", b"loca", b"head", b"junk"]);
+        let body = font[12 + 64..].to_vec();
+        normalize(&mut font);
+        assert_eq!(tags(&font), [b"head", b"loca", b"maxp"]);
+        let head = table_range(&font, b"head").unwrap();
+        assert_eq!(font[head.start..head.start + 4], [0, 1, 0, 0]);
+        let maxp = table_range(&font, b"maxp").unwrap();
+        assert_eq!(font[maxp.start + 4..maxp.start + 6], [0, 3]);
+        let mut expected = body.clone();
+        expected[4..6].copy_from_slice(&[0, 3]); // maxp glyph count
+        expected[16..20].copy_from_slice(&[0, 1, 0, 0]); // head version
+        assert_eq!(font[12 + 64..], expected[..], "nothing else changed");
+        let before = font.clone();
+        normalize(&mut font);
+        assert_eq!(font, before, "a normalized font is a fixed point");
+        for short in [
+            &b"\x00\x01\x00\x00\x00"[..],
+            b"\x00\x01\x00\x00\x00\x09",
+            b"ttcf\x00\x02",
+        ] {
+            let mut data = short.to_vec();
+            normalize(&mut data);
+            assert_eq!(data, short);
+        }
     }
 
     #[test]

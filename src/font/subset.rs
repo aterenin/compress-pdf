@@ -23,10 +23,13 @@ pub enum Program {
 const PASS_THROUGH_TABLES: [&[u8; 4]; 2] = [b"cmap", b"post"];
 
 /// Tables a PDF consumer never reads: layout, legacy kerning, hinting
-/// helpers, signatures. Dropping them is a pure saving.
-const DROP_TABLES: [&[u8; 4]; 12] = [
+/// helpers, signatures, and `OS/2`, whose selection and embedding metadata
+/// a viewer takes from the font descriptor instead (and which producers
+/// write empty or short often enough that HarfBuzz would otherwise refuse
+/// the font). Dropping them is a pure saving.
+const DROP_TABLES: [&[u8; 4]; 13] = [
     b"GSUB", b"GPOS", b"GDEF", b"BASE", b"JSTF", b"kern", b"DSIG", b"hdmx", b"LTSH", b"VDMX",
-    b"gasp", b"PCLT",
+    b"gasp", b"PCLT", b"OS/2",
 ];
 
 /// The program reduced to `glyphs` (glyph 0 is always kept), or `None`
