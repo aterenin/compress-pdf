@@ -338,7 +338,10 @@ the same inputs, laid out like the corpus: the reference for
 `evals/corpus/pdfjs/test/pdfs/tracemonkey.pdf` is
 `evals/reference/<name>/pdfjs/test/pdfs/tracemonkey.pdf`, so files that
 share a name in different folders (veraPDF has 218 such names) stay
-distinct. There can be any number of references. A reference
+distinct. There can be any number of references. `score` also writes
+our own outputs the same way, to `evals/output/<preset>/` followed by the
+corpus-relative path, so they can be opened next to the originals and the
+references. A reference
 is just a directory, so a tool run with several settings is several
 references, named by convention `<tool>-<preset>` (for example
 `app-a-standard`). `score --preset standard` compares our `standard` output

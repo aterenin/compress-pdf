@@ -107,8 +107,9 @@ enum Cmd {
     },
     /// Show what is present, missing, or stale versus the pins.
     Status,
-    /// Run a subset through the pipeline and compare output sizes with
-    /// reference outputs under evals/reference/<name>/.
+    /// Run a subset through the pipeline, write our outputs under
+    /// evals/output/<preset>/, and compare their sizes with reference
+    /// outputs under evals/reference/<name>/.
     Score {
         /// Our preset to score (default: each preset against the references
         /// whose name ends in it).

@@ -11,6 +11,8 @@ use compress_pdf::config::{Config, Preset};
 use serde::Deserialize;
 
 const REFERENCE_DIR: &str = "evals/reference";
+/// Our outputs, as `<preset>/<path under evals/corpus>`, for viewing.
+const OUTPUT_DIR: &str = "evals/output";
 const PRESETS: [&str; 3] = ["less", "standard", "more"];
 
 /// A reference directory: an external tool's outputs, laid out like the
@@ -122,16 +124,29 @@ fn score_preset(preset: &str, files: &[String], refs: &[Reference], render: bool
             })
             .collect();
         let (ours, ssim) = compress(&input, &config, render.then_some(preset_value));
+        if let Some(bytes) = &ours {
+            write_output(preset, f, bytes)?;
+        }
         rows.push(Row {
             file: f.clone(),
             input: input.len() as u64,
-            ours,
+            ours: ours.map(|b| b.len() as u64),
             ssim,
             refs: refs_sizes,
         });
     }
     print_table(&rows, refs);
     Ok(())
+}
+
+/// Writes our output where a reference output would sit, under
+/// `evals/output/<preset>/` instead of `evals/reference/<name>/`.
+fn write_output(preset: &str, file: &str, bytes: &[u8]) -> Result<()> {
+    let path = Path::new(OUTPUT_DIR).join(preset).join(file);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))
 }
 
 fn preset_config(name: &str) -> Result<(Config, Preset)> {
@@ -144,10 +159,14 @@ fn preset_config(name: &str) -> Result<(Config, Preset)> {
     Ok((Config::preset(preset), preset))
 }
 
-/// Our output size for an input, and the minimum page SSIM against it
-/// when `render` names the preset, on a thread with room for deep
-/// parsers. Sizes are `None` when the pipeline refuses or fails.
-fn compress(input: &[u8], config: &Config, render: Option<Preset>) -> (Option<u64>, Option<f32>) {
+/// Our output for an input, and the minimum page SSIM against it when
+/// `render` names the preset, on a thread with room for deep parsers.
+/// The output is `None` when the pipeline refuses or fails.
+fn compress(
+    input: &[u8],
+    config: &Config,
+    render: Option<Preset>,
+) -> (Option<Vec<u8>>, Option<f32>) {
     let input = input.to_vec();
     let config = config.clone();
     let result = std::thread::Builder::new()
@@ -157,7 +176,7 @@ fn compress(input: &[u8], config: &Config, render: Option<Preset>) -> (Option<u6
         .and_then(|h| h.join().ok())
         .flatten();
     match result {
-        Some((size, ssim)) => (Some(size), ssim),
+        Some((bytes, ssim)) => (Some(bytes), ssim),
         None => (None, None),
     }
 }
@@ -166,7 +185,7 @@ fn run_pipeline(
     input: &[u8],
     config: &Config,
     render: Option<Preset>,
-) -> Option<(u64, Option<f32>)> {
+) -> Option<(Vec<u8>, Option<f32>)> {
     let mut doc = lopdf::Document::load_mem(input).ok()?;
     let mut report = compress_pdf::report::Report::new(input.len());
     compress_pdf::pipeline::run(&mut doc, config, &mut report).ok()?;
@@ -176,7 +195,7 @@ fn run_pipeline(
             .ok()
             .and_then(|c| c.min())
     });
-    Some((out.len() as u64, ssim))
+    Some((out, ssim))
 }
 
 fn print_table(rows: &[Row], refs: &[Reference]) {
