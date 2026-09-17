@@ -1,6 +1,6 @@
 # Compress PDF
 
-This is a Rust-based command line tool which tries to [do one thing, and do it well](https://en.wikipedia.org/wiki/Unix_philosophy): compress PDFs to reduce file size while maintaining content, using a large array of techniques for images, fonts, metadata, and other 
+This is a Rust-based command line tool which tries to [do one thing, and do it well](https://en.wikipedia.org/wiki/Unix_philosophy): compress PDFs to reduce file size while maintaining content, using a large array of techniques for images, fonts, metadata, and other components whose size can be reduced.
 
 **Development style.** This code is built using evaluation-driven development, and is 100% AI-generated: in particular, this file is the only human-written one in the codebase.
 The high-level compression pipeline is described in [CLAUDE.md](/CLAUDE.md), and is human-codesigned to ensure the code's overall structure is sane and makes sense.
