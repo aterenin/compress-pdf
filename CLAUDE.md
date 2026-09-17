@@ -373,8 +373,11 @@ Excluded by the scope rule (no preset uses them): MRC segmentation, JPEG 2000
 output, LZW and RunLength output, CMYK as a conversion target, annotation and
 form stripping or flattening, linearization, force-recompress.
 
-Excluded for v1 regardless: inline images (`BI ... EI`), encrypted input,
-PDF/A conformance preservation.
+Excluded for v1 regardless: inline images (`BI ... EI`), input that needs
+a password to open, PDF/A conformance preservation. Encrypted input that
+opens without a password (the usual way permission restrictions are set)
+is decrypted and written unencrypted, with a report note saying the
+restrictions no longer apply.
 
 ### Open decisions
 
@@ -486,9 +489,15 @@ place: `cargo test --test evals` runs the `quick` subset under all three
 presets (78 trials, about twenty seconds) with the four structural
 invariants, plus the render check when asked. `src/verify.rs` implements the
 structural level with `hayro-syntax`, with the input as baseline; `main`
-refuses to write on regressions and the harness fails on them. Encrypted
-input is refused by `pipeline::run` (lopdf decrypts on load and drops the
-trailer entry, so `was_encrypted` is checked too), and so is damaged input
+refuses to write on regressions and the harness fails on them. Input that
+needs a password is refused by `pipeline::run` (lopdf tries the empty
+password on load; when that fails it loads nothing and keeps the trailer's
+`Encrypt` entry, which is what the refusal checks). Encrypted input that
+opens with the empty password was decrypted on load and is compressed and
+written unencrypted, with a note, unless the file names crypt filters
+lopdf could not read: lopdf reads them only when written inline, and
+otherwise leaves the data encrypted without an error, so such files are
+refused. Refused as well is damaged input
 the parser loaded silently short: a page tree with kids it could not load,
 a `Contents` or resource-category entry that refers to an object it could
 not load, or a content stream without a `Length` that it read as empty

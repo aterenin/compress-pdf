@@ -223,13 +223,14 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
     let pages_in = doc.get_pages().len();
 
     let mut report = Report::new(input.len());
-    if doc.trailer.has(b"Encrypt") || doc.was_encrypted() {
-        // Encrypted input is out of scope for v1: the expected outcome is a
-        // clean refusal, not an output file.
+    if doc.trailer.has(b"Encrypt") {
+        // Input that needs a password is out of scope: the expected outcome
+        // is a clean refusal, not an output file. Encrypted input that opens
+        // without one was decrypted on load and is compressed like any other.
         return match pipeline::run(&mut doc, &Config::preset(preset), &mut report) {
             Err(e) if e.to_string() == pipeline::ENCRYPTED_INPUT => Ok(()),
-            Err(e) => Err(format!("encrypted input: wrong error: {e:#}").into()),
-            Ok(()) => Err("encrypted input was not refused".into()),
+            Err(e) => Err(format!("password-protected input: wrong error: {e:#}").into()),
+            Ok(()) => Err("password-protected input was not refused".into()),
         };
     }
     match pipeline::run(&mut doc, &Config::preset(preset), &mut report) {
@@ -238,7 +239,8 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
         // outcome, the same as for encrypted input.
         Err(e)
             if e.to_string() == pipeline::DAMAGED_PAGE_TREE
-                || e.to_string() == pipeline::DAMAGED_RESOURCES =>
+                || e.to_string() == pipeline::DAMAGED_RESOURCES
+                || e.to_string() == pipeline::UNDECRYPTED_INPUT =>
         {
             return Ok(());
         }

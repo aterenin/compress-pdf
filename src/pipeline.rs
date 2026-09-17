@@ -47,18 +47,25 @@ pub fn default_stages() -> Vec<Box<dyn Stage>> {
     ]
 }
 
-/// Error message for encrypted input; stable because callers match on it.
-pub const ENCRYPTED_INPUT: &str = "encrypted input is not supported";
+/// Error message for input that needs a password to open; stable because
+/// callers match on it.
+pub const ENCRYPTED_INPUT: &str = "input is encrypted with a password that is needed to open it";
+pub const UNDECRYPTED_INPUT: &str =
+    "input is encrypted with crypt filters the parser could not read, so it was not decrypted";
 pub const DAMAGED_PAGE_TREE: &str = "page tree refers to objects the parser could not load";
 pub const DAMAGED_RESOURCES: &str =
     "page content or resources refer to objects the parser could not load";
 
 pub fn run(doc: &mut Document, config: &Config, report: &mut Report) -> Result<()> {
-    // Out of scope for v1 (CLAUDE.md). Refusing is safer than writing a
-    // file that claims to be encrypted but is not, or vice versa. lopdf
-    // decrypts on load and drops the trailer entry, hence the second test.
-    if doc.trailer.has(b"Encrypt") || doc.was_encrypted() {
+    // lopdf tries the empty password on load. When it opens the file it
+    // decrypts every object and drops the trailer entry; when a real
+    // password is needed it loads nothing and the entry stays.
+    if doc.trailer.has(b"Encrypt") {
         anyhow::bail!(ENCRYPTED_INPUT);
+    }
+    if !decryption_is_complete(doc) {
+        // Writing the ciphertext out as plain data would lose the pages.
+        anyhow::bail!(UNDECRYPTED_INPUT);
     }
     if !page_tree_is_intact(doc) {
         // A kid that did not load is a page the parser cannot see; writing
@@ -71,6 +78,12 @@ pub fn run(doc: &mut Document, config: &Config, report: &mut Report) -> Result<(
         // load: the page would lose it while still "verifying". Viewers
         // that rebuild the cross-reference table recover such files.
         anyhow::bail!(DAMAGED_RESOURCES);
+    }
+    if doc.was_encrypted() {
+        report.note(
+            "input was encrypted but opens without a password; the output is written \
+             unencrypted, so the permission restrictions it carried no longer apply",
+        );
     }
     normalize_filters(doc);
     hex_binary_strings(doc);
@@ -219,6 +232,21 @@ fn hexify(object: &mut Object) {
     }
 }
 
+/// Whether lopdf could read the crypt filters an encrypted file names for
+/// its streams and strings. It reads them only when written inline; when a
+/// file refers to them indirectly it silently leaves the data encrypted,
+/// and every stream then reads as garbage.
+fn decryption_is_complete(doc: &Document) -> bool {
+    let Some(state) = &doc.encryption_state else {
+        return true;
+    };
+    [state.default_stream_filter(), state.default_string_filter()]
+        .iter()
+        .all(|name| {
+            name.is_empty() || *name == b"Identity" || state.crypt_filters().contains_key(*name)
+        })
+}
+
 /// Every `Kids` entry reachable from the catalog resolves to a dictionary.
 fn page_tree_is_intact(doc: &Document) -> bool {
     let Some(root) = doc
@@ -364,6 +392,94 @@ mod tests {
         };
         s.dict.set("Length", 0);
         assert!(resources_are_intact(&doc));
+    }
+
+    /// A one-page document saved encrypted with `user_password`, loaded back.
+    fn encrypted_doc(user_password: &str) -> Document {
+        use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+        let mut doc = doc_with_kids(false);
+        doc.trailer.set(
+            "ID",
+            vec![Object::string_literal("id"), Object::string_literal("id")],
+        );
+        let version = EncryptionVersion::V2 {
+            document: &doc,
+            owner_password: "owner",
+            user_password,
+            key_length: 128,
+            permissions: Permissions::PRINTABLE,
+        };
+        let state = EncryptionState::try_from(version).unwrap();
+        doc.encrypt(&state).unwrap();
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        Document::load_mem(&bytes).unwrap()
+    }
+
+    /// AES-128 with crypt filters, which lopdf can read only when inline.
+    fn aes_doc(indirect_filters: bool) -> Document {
+        use lopdf::encryption::crypt_filters::{Aes128CryptFilter, CryptFilter};
+        use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        let mut doc = doc_with_kids(false);
+        let id = Object::string_literal("id");
+        doc.trailer.set("ID", vec![id.clone(), id]);
+        let filter: Arc<dyn CryptFilter> = Arc::new(Aes128CryptFilter);
+        let version = EncryptionVersion::V4 {
+            document: &doc,
+            encrypt_metadata: true,
+            crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), filter)]),
+            stream_filter: b"StdCF".to_vec(),
+            string_filter: b"StdCF".to_vec(),
+            owner_password: "owner",
+            user_password: "",
+            permissions: Permissions::PRINTABLE,
+        };
+        let state = EncryptionState::try_from(version).unwrap();
+        doc.encrypt(&state).unwrap();
+        if indirect_filters {
+            let encrypt = doc.trailer.get(b"Encrypt").unwrap().as_reference().unwrap();
+            let filters = doc
+                .get_dictionary(encrypt)
+                .unwrap()
+                .get(b"CF")
+                .unwrap()
+                .clone();
+            let filters = doc.add_object(filters);
+            doc.get_dictionary_mut(encrypt).unwrap().set("CF", filters);
+        }
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).unwrap();
+        Document::load_mem(&bytes).unwrap()
+    }
+
+    #[test]
+    fn crypt_filters_lopdf_could_not_read_are_refused() {
+        let config = Config::preset(crate::config::Preset::Standard);
+        let mut inline = aes_doc(false);
+        run(&mut inline, &config, &mut Report::new(0)).unwrap();
+        let mut indirect = aes_doc(true);
+        let err = run(&mut indirect, &config, &mut Report::new(0)).unwrap_err();
+        assert_eq!(err.to_string(), UNDECRYPTED_INPUT);
+    }
+
+    #[test]
+    fn encryption_is_removed_only_when_no_password_is_needed() {
+        let config = Config::preset(crate::config::Preset::Standard);
+        let mut open = encrypted_doc("");
+        let mut report = Report::new(0);
+        run(&mut open, &config, &mut report).unwrap();
+        assert!(!open.trailer.has(b"Encrypt"));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("written unencrypted"))
+        );
+        let mut locked = encrypted_doc("secret");
+        let err = run(&mut locked, &config, &mut Report::new(0)).unwrap_err();
+        assert_eq!(err.to_string(), ENCRYPTED_INPUT);
     }
 
     #[test]
