@@ -1,6 +1,7 @@
 //! `cargo evals score`: run a subset through the pipeline and compare
 //! output sizes with reference outputs under `evals/reference/<name>/`,
-//! matched by file name (CLAUDE.md, "Evals tooling").
+//! each at the same relative path as its original under `evals/corpus/`
+//! (CLAUDE.md, "Evals tooling").
 
 use std::fs;
 use std::path::Path;
@@ -12,7 +13,8 @@ use serde::Deserialize;
 const REFERENCE_DIR: &str = "evals/reference";
 const PRESETS: [&str; 3] = ["less", "standard", "more"];
 
-/// A reference directory: an external tool's outputs matched by file name.
+/// A reference directory: an external tool's outputs, laid out like the
+/// corpus.
 struct Reference {
     name: String,
     /// From `tool.toml`, when present.
@@ -111,11 +113,10 @@ fn score_preset(preset: &str, files: &[String], refs: &[Reference], render: bool
             println!("  missing: {f}");
             continue;
         };
-        let base = Path::new(f).file_name().unwrap_or_default().to_os_string();
         let refs_sizes = refs
             .iter()
             .map(|r| {
-                fs::metadata(Path::new(REFERENCE_DIR).join(&r.name).join(&base))
+                fs::metadata(Path::new(REFERENCE_DIR).join(&r.name).join(f))
                     .ok()
                     .map(|m| m.len())
             })

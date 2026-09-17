@@ -334,7 +334,11 @@ writes `evals/corpus/MANIFEST.json` with what was fetched and at which
 commit. `status` compares the manifest against `evals.toml`. `score` runs
 the scoring subset and compares against reference outputs. A reference is
 a directory `evals/reference/<name>/` holding an external tool's output for
-the same inputs, matched by file name; there can be any number. A reference
+the same inputs, laid out like the corpus: the reference for
+`evals/corpus/pdfjs/test/pdfs/tracemonkey.pdf` is
+`evals/reference/<name>/pdfjs/test/pdfs/tracemonkey.pdf`, so files that
+share a name in different folders (veraPDF has 218 such names) stay
+distinct. There can be any number of references. A reference
 is just a directory, so a tool run with several settings is several
 references, named by convention `<tool>-<preset>` (for example
 `app-a-standard`). `score --preset standard` compares our `standard` output
