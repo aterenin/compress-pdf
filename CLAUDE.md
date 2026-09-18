@@ -364,7 +364,9 @@ Sources:
 | hand-picked | arXiv papers (Type 1 fonts), Internet Archive scans (JBIG2, JPX) | about 10 | scoring |
 
 **CI** is two GitHub Actions workflows. `.github/workflows/checks.yml`
-runs the four gates on every branch push: `fmt --check`, clippy,
+runs the four gates on every branch push and on pull requests from forks
+(one from a branch of this repository already ran on its push):
+`fmt --check`, clippy,
 `kiss check` (version pinned in the workflow) and `cargo test`, which
 without a corpus is the unit and probe tests.
 `.github/workflows/evals.yml` does not run on ordinary pushes, since the

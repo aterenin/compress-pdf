@@ -1,12 +1,13 @@
 # The four gates a change has to pass (CLAUDE.md, "Toolchain"): formatting,
-# clippy, kiss, and the tests. Runs on every branch push, and is called by
-# evals.yml before the corpus run. No corpus is fetched here, so the evals
+# clippy, kiss, and the tests. Runs on every branch push and on pull
+# requests, and is called by evals.yml before the corpus run. No corpus is fetched here, so the evals
 # harness registers nothing and `cargo test` is the unit and probe tests.
 name: checks
 
 on:
   push:
     branches: ["**"] # branches only; a tag push runs evals.yml, which calls this
+  pull_request:
   workflow_call:
 
 permissions:
@@ -23,6 +24,11 @@ env:
 jobs:
   checks:
     name: fmt, clippy, kiss, unit and probe tests
+    # A pull request from a branch of this repository already ran on the
+    # push; only pull requests from forks need their own run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
