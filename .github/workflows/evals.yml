@@ -1,0 +1,109 @@
+# Full checks plus the corpus evals. Too heavy for every push (the corpus is
+# a 1.1 GB download and the render run takes a while), so it runs when a tag
+# is pushed and on demand from the Actions tab.
+name: evals
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      subset:
+        description: Subset from evals.toml, or "full" for every corpus file
+        type: choice
+        options: [full, scoring, quick]
+        default: full
+      render:
+        description: Render every page before and after and compare (slower)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  KISS_VERSION: "0.4.10"
+
+jobs:
+  checks:
+    name: fmt, clippy, kiss, unit and probe tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies (bindgen needs libclang, mozjpeg needs nasm)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache kiss
+        id: kiss
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/kiss
+          key: kiss-${{ runner.os }}-${{ env.KISS_VERSION }}
+      - name: Install kiss
+        if: steps.kiss.outputs.cache-hit != 'true'
+        run: cargo install kiss-ai --version "$KISS_VERSION" --locked
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: kiss check
+      # Without a corpus the evals harness registers nothing, so this is the
+      # unit and probe tests.
+      - run: cargo test
+
+  corpus:
+    name: corpus evals
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      EVALS_SUBSET: ${{ inputs.subset || 'full' }}
+      EVALS_RENDER: ${{ inputs.render == false && '0' || '1' }}
+      # Hosted runners are slower than a desktop; the default is 180.
+      EVALS_TIMEOUT_SECS: "600"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies (bindgen needs libclang, mozjpeg needs nasm)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The corpus is pinned by evals.toml, so that file is the cache key.
+      # Restore and save are separate steps so a failing test run still
+      # leaves the download cached.
+      - name: Restore corpus
+        id: corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: evals/corpus
+          key: corpus-${{ hashFiles('evals.toml') }}
+      - name: Fetch corpus
+        run: cargo evals fetch
+      - run: cargo evals status
+      - name: Save corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: evals/corpus
+          key: corpus-${{ hashFiles('evals.toml') }}
+      - name: Run evals
+        run: |
+          set -o pipefail
+          cargo test --release --test evals 2>&1 | tee evals.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Corpus evals: subset \`$EVALS_SUBSET\`, render \`$EVALS_RENDER\`"
+            echo '```'
+            grep -E '^test result|FAILED|below floor' evals.log | head -100 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-log
+          path: evals.log

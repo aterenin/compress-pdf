@@ -363,6 +363,16 @@ Sources:
 | verapdf | github.com/veraPDF/veraPDF-corpus | 2,904 | soak only; color space, metadata and output-intent edge cases |
 | hand-picked | arXiv papers (Type 1 fonts), Internet Archive scans (JBIG2, JPX) | about 10 | scoring |
 
+**CI** is one GitHub Actions workflow, `.github/workflows/evals.yml`. It
+does not run on ordinary pushes, since the corpus is a 1.1 GB download; it
+runs when a tag is pushed and on manual dispatch, where the subset (`full`
+by default) and the render check (on by default) can be chosen. A first job
+runs `fmt --check`, clippy, `kiss check` (version pinned in the workflow)
+and `cargo test`; a second fetches the corpus, cached under a key derived
+from `evals.toml` so a pin bump refetches, and runs the evals harness in a
+release build with a longer per-file timeout than the local default. The
+log is uploaded as an artifact and failures are listed in the run summary.
+
 Everything under `evals/` is gitignored and is never a build input.
 Third-party material placed there for local comparison must never be linked,
 loaded, or copied into the crate.
