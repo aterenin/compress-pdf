@@ -1,0 +1,48 @@
+# The four gates a change has to pass (CLAUDE.md, "Toolchain"): formatting,
+# clippy, kiss, and the tests. Runs on every branch push, and is called by
+# evals.yml before the corpus run. No corpus is fetched here, so the evals
+# harness registers nothing and `cargo test` is the unit and probe tests.
+name: checks
+
+on:
+  push:
+    branches: ["**"] # branches only; a tag push runs evals.yml, which calls this
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  KISS_VERSION: "0.4.10"
+
+jobs:
+  checks:
+    name: fmt, clippy, kiss, unit and probe tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies (bindgen needs libclang, mozjpeg needs nasm)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache kiss
+        id: kiss
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/kiss
+          key: kiss-${{ runner.os }}-${{ env.KISS_VERSION }}
+      - name: Install kiss
+        if: steps.kiss.outputs.cache-hit != 'true'
+        run: cargo install kiss-ai --version "$KISS_VERSION" --locked
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: kiss check
+      - run: cargo test
