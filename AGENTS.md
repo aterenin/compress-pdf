@@ -94,7 +94,7 @@ through Rust bindings.
 
 ### Data flow
 
-```
+```text
 main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
                               |
             pipeline::run -> pipeline::serialize -> verify (structural, render)
