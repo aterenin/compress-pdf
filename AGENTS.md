@@ -33,8 +33,8 @@ code is copied from other projects.
 Rust edition 2024, `rust-version` 1.92 (the oldest the hayro crates
 accept; checked by a CI job on that toolchain). The README doubles as the
 crate-level documentation through `include_str!` in `src/lib.rs`, and
-`Cargo.toml` excludes the design notes, CI and evaluation tooling from the
-published package. A change is done when `cargo test`, `clippy -D warnings`,
+`Cargo.toml` excludes CI and the evaluation tooling from the published
+package; AGENTS.md ships with it. A change is done when `cargo test`, `clippy -D warnings`,
 `fmt --check`, and `kiss check` all pass. Iterate until they do.
 
 ### kiss

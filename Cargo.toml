@@ -9,8 +9,8 @@ readme = "README.md"
 keywords = ["pdf", "compression", "cli", "images", "fonts"]
 categories = ["command-line-utilities", "compression", "multimedia::images"]
 rust-version = "1.92"
-# What a user of the crate needs; the design notes, CI and evaluation
-# tooling stay in the repository.
+# What a user of the crate needs; CI and the evaluation tooling (a
+# development benchmark) stay in the repository.
 exclude = [
     ".github/",
     ".cargo/",
