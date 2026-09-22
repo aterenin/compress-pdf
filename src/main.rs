@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use compress_pdf::compress::{Compressed, Verify, compress};
+use compress_pdf::compress::{Verify, compress};
 use compress_pdf::config::Config;
 
 use crate::cli::{Cli, VerifyArg};
@@ -47,16 +47,14 @@ fn compress_one(cli: &Cli, config: &Config, input_path: &Path) -> Result<()> {
         },
         VerifyArg::Structural => Verify::Structural,
     };
-    let Compressed {
-        output: buf,
-        report,
-    } = match compress(&input, config, verify) {
+    let done = match compress(&input, config, verify) {
         Ok(compressed) => compressed,
         Err(rejected) => {
             print!("{}", rejected.report);
             return Err(rejected.reason);
         }
     };
+    let (buf, report) = (done.output, done.report);
 
     if cli.dry_run {
         print!("{report}");

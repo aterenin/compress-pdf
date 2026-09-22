@@ -101,9 +101,14 @@ main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
              usage -> images -> fonts -> strip -> structure
 ```
 
-- `src/lib.rs` exposes `compress`, `config`, `pipeline`, `report`,
-  `stages`, `verify`, `font` and `content`; the binary and the test
-  harnesses are clients of it.
+- `src/lib.rs` exposes `compress`, `config`, `pipeline`, `report` and
+  `verify`; that is the crate's API, and the binary and the test harnesses
+  are clients of it. `stages`, `font` and `content` are private
+  implementation. The `Stage` trait and `Context` are crate-private too,
+  so stages can change without an API break. Public structs that the
+  library fills in (`Config`, `Report` and its rows, `Compressed`,
+  `Verification`, `Comparison`) are `#[non_exhaustive]`, so a field can be
+  added in a minor release.
 - `src/compress.rs` is the one-call entry point: what the command line does
   for a document, as a library function. It loads the bytes, runs the
   pipeline, serializes, applies the structural check with the input as

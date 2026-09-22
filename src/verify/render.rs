@@ -42,6 +42,7 @@ pub fn floor(preset: Preset) -> f32 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PageScore {
     /// Zero-based page index.
     pub page: usize,
@@ -49,6 +50,7 @@ pub struct PageScore {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Comparison {
     pub pages: Vec<PageScore>,
     pub floor: f32,

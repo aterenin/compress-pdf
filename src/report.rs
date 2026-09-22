@@ -8,6 +8,7 @@ use lopdf::ObjectId;
 
 /// One row per image XObject the image stage looked at.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ImageRow {
     pub object: ObjectId,
     pub width: u32,
@@ -26,6 +27,7 @@ pub struct ImageRow {
 
 /// One row per embedded font program the font stage looked at.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FontRow {
     pub object: ObjectId,
     pub name: String,
@@ -38,6 +40,7 @@ pub struct FontRow {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct StageSummary {
     pub name: &'static str,
     pub bytes_before: usize,
@@ -46,6 +49,7 @@ pub struct StageSummary {
 }
 
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct Report {
     pub input_bytes: usize,
     pub output_bytes: usize,

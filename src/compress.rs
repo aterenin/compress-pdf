@@ -27,6 +27,7 @@ pub enum Verify {
 
 /// A compressed document and the report of what was done to it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Compressed {
     /// The output bytes; the input bytes unchanged when nothing was smaller.
     pub output: Vec<u8>,
@@ -35,6 +36,7 @@ pub struct Compressed {
 
 /// Why nothing was produced, with the report up to that point.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Rejected {
     pub report: Report,
     pub reason: anyhow::Error,

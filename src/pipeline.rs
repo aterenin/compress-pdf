@@ -3,7 +3,7 @@
 //! A stage is a black box with one contract: it receives the whole document
 //! plus shared context, mutates the document in place, and records what it did
 //! in the report. Stages do not call each other. Anything one stage needs from
-//! another travels through [`Context`] (today: the image usage analysis).
+//! another travels through `Context` (today: the image usage analysis).
 
 use std::time::Instant;
 
@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::report::{Report, StageSummary};
 use crate::stages::{self, usage::ImageUsage};
 
-pub struct Context<'a> {
+pub(crate) struct Context<'a> {
     pub config: &'a Config,
     pub report: &'a mut Report,
     /// Filled by the usage stage, read by the image stage.
@@ -22,7 +22,7 @@ pub struct Context<'a> {
     pub usage: ImageUsage,
 }
 
-pub trait Stage {
+pub(crate) trait Stage {
     fn name(&self) -> &'static str;
 
     /// Whether the stage should run at all under this configuration. Skipped
@@ -37,7 +37,7 @@ pub trait Stage {
 /// Fixed order. Analysis first, then the lossy image work, then fonts, then
 /// the cheap structural passes that clean up whatever the earlier stages left
 /// behind.
-pub fn default_stages() -> Vec<Box<dyn Stage>> {
+pub(crate) fn default_stages() -> Vec<Box<dyn Stage>> {
     vec![
         Box::new(stages::usage::AnalyzeUsage),
         Box::new(stages::images::RecompressImages),

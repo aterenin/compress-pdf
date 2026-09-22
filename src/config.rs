@@ -197,6 +197,7 @@ impl Dpi {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Config {
     // Image classes and the codecs to try for each.
     pub bitonal: Codecs,

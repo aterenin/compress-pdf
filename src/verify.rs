@@ -22,6 +22,7 @@ use hayro_syntax::object::{Array, Dict, Name};
 const MAX_PROBLEMS: usize = 50;
 
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct Verification {
     pub pages: usize,
     pub objects: usize,

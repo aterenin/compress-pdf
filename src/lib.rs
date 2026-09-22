@@ -9,9 +9,12 @@
 
 pub mod compress;
 pub mod config;
-pub mod content;
-pub mod font;
 pub mod pipeline;
 pub mod report;
-pub mod stages;
 pub mod verify;
+
+// Implementation: the stages, the font-program machinery and the content
+// lexer are reachable only through the modules above.
+mod content;
+mod font;
+mod stages;
