@@ -1,31 +1,51 @@
 mod cli;
 
 use std::fs;
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use lopdf::Document;
 use tracing_subscriber::EnvFilter;
 
-use compress_pdf::{pipeline, report::Report, verify};
+use compress_pdf::{config::Config, pipeline, report::Report, verify};
 
 use crate::cli::{Cli, VerifyArg};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
-
     let config = cli.config();
-    let output = cli.output_path();
     tracing::debug!(?config, "effective configuration");
 
-    let input = fs::read(&cli.input).with_context(|| format!("reading {}", cli.input.display()))?;
+    if let [input] = cli.inputs.as_slice() {
+        return compress_one(&cli, &config, input);
+    }
+    // Several inputs: one failure does not stop the rest.
+    let mut failed = 0;
+    for input in &cli.inputs {
+        println!("== {}", input.display());
+        if let Err(e) = compress_one(&cli, &config, input) {
+            eprintln!("error: {}: {e:#}", input.display());
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} of {} files failed", cli.inputs.len());
+    }
+    Ok(())
+}
+
+fn compress_one(cli: &Cli, config: &Config, input_path: &Path) -> Result<()> {
+    let output = cli.output_path(input_path);
+    let input =
+        fs::read(input_path).with_context(|| format!("reading {}", input_path.display()))?;
     let mut doc =
-        Document::load_mem(&input).with_context(|| format!("parsing {}", cli.input.display()))?;
+        Document::load_mem(&input).with_context(|| format!("parsing {}", input_path.display()))?;
 
     let pages_in = doc.get_pages().len();
     let mut report = Report::new(input.len());
-    pipeline::run(&mut doc, &config, &mut report)?;
+    pipeline::run(&mut doc, config, &mut report)?;
     let buf = pipeline::serialize(&mut doc, &input, &mut report)?;
 
     // Nothing to verify when the output is the input unchanged.
@@ -46,7 +66,7 @@ fn main() -> Result<()> {
             }
         }
         if cli.verify == VerifyArg::Render {
-            verify_render(&cli, &input, &buf, &mut report)?;
+            verify_render(cli, &input, &buf, &mut report)?;
         }
     }
 
@@ -55,6 +75,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
     fs::write(&output, &buf).with_context(|| format!("writing {}", output.display()))?;
     print!("{report}");
     println!("wrote {}", output.display());

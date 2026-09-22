@@ -1,7 +1,7 @@
 //! Command-line surface. Everything here is translated into a [`Config`]
 //! before any PDF work happens, so the pipeline never sees clap types.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
 
@@ -14,10 +14,13 @@ use compress_pdf::config::{Codecs, ColorConversion, Config, Dpi, Preset, Strip};
     about = "Shrink PDFs by recompressing images, subsetting fonts and stripping dead weight"
 )]
 pub struct Cli {
-    /// Input PDF.
-    pub input: PathBuf,
+    /// Input PDFs, compressed one after another.
+    #[arg(required = true, num_args = 1..)]
+    pub inputs: Vec<PathBuf>,
 
-    /// Output PDF. Defaults to `<input>-compressed.pdf` next to the input.
+    /// Output file, or output directory when it is one or there are several
+    /// inputs. Defaults to `<input>-compressed.pdf` next to each input.
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
 
     /// Preset to start from. Individual flags below override preset values.
@@ -203,15 +206,19 @@ impl Cli {
         cfg
     }
 
-    pub fn output_path(&self) -> PathBuf {
-        self.output.clone().unwrap_or_else(|| {
-            let stem = self
-                .input
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "output".into());
-            self.input.with_file_name(format!("{stem}-compressed.pdf"))
-        })
+    /// Where `input`'s output goes: the named file, or inside the named
+    /// directory, or next to the input with `-compressed` added.
+    pub fn output_path(&self, input: &Path) -> PathBuf {
+        let stem = input
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "output".into());
+        let name = format!("{stem}-compressed.pdf");
+        match &self.output {
+            Some(dir) if dir.is_dir() || self.inputs.len() > 1 => dir.join(name),
+            Some(file) => file.clone(),
+            None => input.with_file_name(name),
+        }
     }
 }
 
@@ -221,6 +228,28 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(["compress-pdf", "in.pdf"].iter().chain(args)).expect("parses")
+    }
+
+    #[test]
+    fn output_paths_follow_the_inputs() {
+        let one = Cli::try_parse_from(["compress-pdf", "a/x.pdf"]).unwrap();
+        assert_eq!(
+            one.output_path(Path::new("a/x.pdf")),
+            Path::new("a/x-compressed.pdf")
+        );
+        let named = Cli::try_parse_from(["compress-pdf", "a/x.pdf", "-o", "y.pdf"]).unwrap();
+        assert_eq!(named.output_path(Path::new("a/x.pdf")), Path::new("y.pdf"));
+        let many =
+            Cli::try_parse_from(["compress-pdf", "a/x.pdf", "b/z.pdf", "-o", "out"]).unwrap();
+        assert_eq!(many.inputs.len(), 2);
+        assert_eq!(
+            many.output_path(Path::new("b/z.pdf")),
+            Path::new("out/z-compressed.pdf")
+        );
+        assert!(
+            Cli::try_parse_from(["compress-pdf"]).is_err(),
+            "an input is required"
+        );
     }
 
     #[test]

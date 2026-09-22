@@ -263,6 +263,11 @@ the preset plus an override for every `Config` field: `--dpi` and
 `--color-conversion`, `--strip`, and a `true`/`false` flag for each boolean
 (clipping, color reduction, the four font passes, resource cleanup,
 deduplication, content-stream rebuild). There is no grayscale option.
+Several inputs are compressed one after another with the same settings;
+`-o` names the output file for one input, or the output directory for
+several, and without it each output lands next to its input as
+`<name>-compressed.pdf`. One file's failure is reported and the rest still
+run; the exit status is then non-zero.
 
 ### Testing
 
