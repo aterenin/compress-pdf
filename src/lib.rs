@@ -7,6 +7,15 @@
 //! is built from. `src/main.rs` and the evaluation harnesses are thin
 //! clients; the design is described in the repository's AGENTS.md.
 
+/// The design notes: what each stage does, the presets, the verification
+/// levels, the evals, and the decisions behind them. This page is the
+/// repository's `AGENTS.md`, included as is, so the text lives in one place.
+// The tables mark progress with `[x]` and `[~]`, which rustdoc would read
+// as links.
+#[allow(rustdoc::broken_intra_doc_links)]
+#[doc = include_str!("../AGENTS.md")]
+pub mod design {}
+
 pub mod compress;
 pub mod config;
 pub mod error;

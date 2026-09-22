@@ -24,9 +24,8 @@ Performance, in most cases, was found to be competitive.
 If you find a PDF on which we perform badly, please submit a GitHub issue.
 
 ## Documentation
-This package does not have traditional documentation.
+This package has minimal traditional documentation, mostly around its public API.
 It is designed primarily for command-line use, which is documented by running `compress-pdf --help`.
-The docs page include only auto-generated content and this readme.
-The package should also be suitable for programmatic use: for this, we recommend you ask your AI agent to look at `main.rs` and `pipeline.rs`.
+The package should also be suitable for programmatic use: we recommend you ask your AI agent to look at `compress::compress` for an entry point, at `Config` for configuration, and at [AGENTS.md](https://github.com/aterenin/compress-pdf/blob/main/AGENTS.md) for an overview of the overall pipeline.
 The code is structured in a manner where it should not be difficult to figure out how it works.
 If you have a use case for which the APIs are poorly suited, please submit a GitHub issue.

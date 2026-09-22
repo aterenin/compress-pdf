@@ -34,7 +34,8 @@ Rust edition 2024, `rust-version` 1.92 (the oldest the hayro crates
 accept; checked by a CI job on that toolchain). The README doubles as the
 crate-level documentation through `include_str!` in `src/lib.rs`, and
 `Cargo.toml` excludes CI and the evaluation tooling from the published
-package; AGENTS.md ships with it. A change is done when `cargo test`, `clippy -D warnings`,
+package; AGENTS.md ships with it, and is also the `design` page of the
+crate documentation, included from the file so the text lives in one place. A change is done when `cargo test`, `clippy -D warnings`,
 `fmt --check`, and `kiss check` all pass. Iterate until they do.
 
 ### kiss
