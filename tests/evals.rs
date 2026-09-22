@@ -22,6 +22,7 @@ use std::time::Duration;
 use std::{env, fs, thread};
 
 use compress_pdf::config::{Config, Preset};
+use compress_pdf::error::Refusal;
 use compress_pdf::pipeline;
 use compress_pdf::report::Report;
 use compress_pdf::verify;
@@ -229,7 +230,7 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
         // is a clean refusal, not an output file. Encrypted input that opens
         // without one was decrypted on load and is compressed like any other.
         return match pipeline::run(&mut doc, &Config::preset(preset), &mut report) {
-            Err(e) if e.to_string() == pipeline::ENCRYPTED_INPUT => Ok(()),
+            Err(Refusal::PasswordRequired) => Ok(()),
             Err(e) => Err(format!("password-protected input: wrong error: {e:#}").into()),
             Ok(()) => Err("password-protected input was not refused".into()),
         };
@@ -238,13 +239,9 @@ fn run_one_inner(path: &Path, preset: Preset) -> Result<(), Failed> {
         // A page tree with kids the parser could not load is refused by
         // design (repair is out of scope); that refusal is the expected
         // outcome, the same as for encrypted input.
-        Err(e)
-            if e.to_string() == pipeline::DAMAGED_PAGE_TREE
-                || e.to_string() == pipeline::DAMAGED_RESOURCES
-                || e.to_string() == pipeline::UNDECRYPTED_INPUT =>
-        {
-            return Ok(());
-        }
+        Err(
+            Refusal::DamagedPageTree | Refusal::DamagedResources | Refusal::UndecryptedCryptFilters,
+        ) => return Ok(()),
         Err(e) => return Err(format!("pipeline failed: {e:#}").into()),
         Ok(()) => {}
     }

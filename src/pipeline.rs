@@ -11,6 +11,7 @@ use anyhow::{Context as _, Result};
 use lopdf::{Document, Object, StringFormat};
 
 use crate::config::Config;
+use crate::error::Refusal;
 use crate::report::{Report, StageSummary};
 use crate::stages::{self, usage::ImageUsage};
 
@@ -47,37 +48,28 @@ pub(crate) fn default_stages() -> Vec<Box<dyn Stage>> {
     ]
 }
 
-/// Error message for input that needs a password to open; stable because
-/// callers match on it.
-pub const ENCRYPTED_INPUT: &str = "input is encrypted with a password that is needed to open it";
-pub const UNDECRYPTED_INPUT: &str =
-    "input is encrypted with crypt filters the parser could not read, so it was not decrypted";
-pub const DAMAGED_PAGE_TREE: &str = "page tree refers to objects the parser could not load";
-pub const DAMAGED_RESOURCES: &str =
-    "page content or resources refer to objects the parser could not load";
-
-pub fn run(doc: &mut Document, config: &Config, report: &mut Report) -> Result<()> {
+pub fn run(doc: &mut Document, config: &Config, report: &mut Report) -> Result<(), Refusal> {
     // lopdf tries the empty password on load. When it opens the file it
     // decrypts every object and drops the trailer entry; when a real
     // password is needed it loads nothing and the entry stays.
     if doc.trailer.has(b"Encrypt") {
-        anyhow::bail!(ENCRYPTED_INPUT);
+        return Err(Refusal::PasswordRequired);
     }
     if !decryption_is_complete(doc) {
         // Writing the ciphertext out as plain data would lose the pages.
-        anyhow::bail!(UNDECRYPTED_INPUT);
+        return Err(Refusal::UndecryptedCryptFilters);
     }
     if !page_tree_is_intact(doc) {
         // A kid that did not load is a page the parser cannot see; writing
         // the file would drop it silently while the page count still adds
         // up. Repair is out of scope for v1.
-        anyhow::bail!(DAMAGED_PAGE_TREE);
+        return Err(Refusal::DamagedPageTree);
     }
     if !resources_are_intact(doc) {
         // Likewise a content stream, font or image the parser could not
         // load: the page would lose it while still "verifying". Viewers
         // that rebuild the cross-reference table recover such files.
-        anyhow::bail!(DAMAGED_RESOURCES);
+        return Err(Refusal::DamagedResources);
     }
     if doc.was_encrypted() {
         report.note(
@@ -349,7 +341,7 @@ mod tests {
             &mut report,
         )
         .unwrap_err();
-        assert_eq!(err.to_string(), DAMAGED_PAGE_TREE);
+        assert!(matches!(err, Refusal::DamagedPageTree));
     }
 
     #[test]
@@ -386,7 +378,7 @@ mod tests {
             &mut report,
         )
         .unwrap_err();
-        assert_eq!(err.to_string(), DAMAGED_RESOURCES);
+        assert!(matches!(err, Refusal::DamagedResources));
         let Ok(Object::Stream(s)) = doc.get_object_mut(empty) else {
             panic!("stream");
         };
@@ -461,7 +453,7 @@ mod tests {
         run(&mut inline, &config, &mut Report::new(0)).unwrap();
         let mut indirect = aes_doc(true);
         let err = run(&mut indirect, &config, &mut Report::new(0)).unwrap_err();
-        assert_eq!(err.to_string(), UNDECRYPTED_INPUT);
+        assert!(matches!(err, Refusal::UndecryptedCryptFilters));
     }
 
     #[test]
@@ -479,7 +471,7 @@ mod tests {
         );
         let mut locked = encrypted_doc("secret");
         let err = run(&mut locked, &config, &mut Report::new(0)).unwrap_err();
-        assert_eq!(err.to_string(), ENCRYPTED_INPUT);
+        assert!(matches!(err, Refusal::PasswordRequired));
     }
 
     #[test]

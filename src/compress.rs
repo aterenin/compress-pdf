@@ -6,11 +6,13 @@
 
 use std::fmt;
 
-use anyhow::{Context as _, Result, bail};
 use lopdf::Document;
 
 use crate::config::{Config, Preset};
+use crate::error::Refusal;
 use crate::report::Report;
+use crate::verify::Verification;
+use crate::verify::render::Comparison;
 use crate::{pipeline, verify};
 
 /// How much of the output to check before handing it back.
@@ -33,6 +35,12 @@ pub struct Compressed {
     /// The output bytes; the input bytes unchanged when nothing was smaller.
     pub output: Vec<u8>,
     pub report: Report,
+    /// The structural check of the output; `None` when the output is the
+    /// input unchanged and nothing was checked.
+    pub verification: Option<Verification>,
+    /// The page comparison, when rendering was asked for and both
+    /// documents rendered.
+    pub render: Option<Comparison>,
 }
 
 /// Why nothing was produced, with the report up to that point.
@@ -40,77 +48,121 @@ pub struct Compressed {
 #[non_exhaustive]
 pub struct Rejected {
     pub report: Report,
-    pub reason: anyhow::Error,
+    pub reason: Refusal,
 }
 
 impl fmt::Display for Rejected {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#}", self.reason)
+        write!(f, "{}", self.reason)
     }
 }
 
 impl std::error::Error for Rejected {}
 
+/// What accumulates while a document is processed, kept whether or not
+/// it succeeds so a rejection still carries the report.
+#[derive(Default)]
+struct Progress {
+    report: Report,
+    verification: Option<Verification>,
+    render: Option<Comparison>,
+}
+
 /// Compresses `input` under `config`. Refuses input the pipeline cannot
 /// handle safely (a password it needs, damage it cannot see past), and
-/// output that verifies worse than the input.
-pub fn compress(input: &[u8], config: &Config, verify: Verify) -> Result<Compressed, Rejected> {
-    let mut report = Report::new(input.len());
-    match run(input, config, verify, &mut report) {
-        Ok(output) => Ok(Compressed { output, report }),
-        Err(reason) => Err(Rejected { report, reason }),
+/// output that verifies worse than the input. The rejection is boxed
+/// because it carries the whole report.
+pub fn compress(
+    input: &[u8],
+    config: &Config,
+    verify: Verify,
+) -> Result<Compressed, Box<Rejected>> {
+    let mut progress = Progress {
+        report: Report::new(input.len()),
+        ..Progress::default()
+    };
+    match run(input, config, verify, &mut progress) {
+        Ok(output) => Ok(Compressed {
+            output,
+            report: progress.report,
+            verification: progress.verification,
+            render: progress.render,
+        }),
+        Err(reason) => Err(Box::new(Rejected {
+            report: progress.report,
+            reason,
+        })),
     }
 }
 
-fn run(input: &[u8], config: &Config, verify: Verify, report: &mut Report) -> Result<Vec<u8>> {
-    let mut doc = Document::load_mem(input).context("parsing the input")?;
+fn run(
+    input: &[u8],
+    config: &Config,
+    verify: Verify,
+    progress: &mut Progress,
+) -> Result<Vec<u8>, Refusal> {
+    let mut doc = Document::load_mem(input).map_err(Refusal::Unparseable)?;
     let pages = doc.get_pages().len();
-    pipeline::run(&mut doc, config, report)?;
-    let output = pipeline::serialize(&mut doc, input, report)?;
+    pipeline::run(&mut doc, config, &mut progress.report)?;
+    let output = pipeline::serialize(&mut doc, input, &mut progress.report)?;
     // Nothing to verify when the output is the input unchanged.
     if output != input {
-        check_structure(input, &output, pages, report)?;
-        check_render(input, &output, verify, report)?;
+        progress.verification = Some(check_structure(
+            input,
+            &output,
+            pages,
+            &mut progress.report,
+        )?);
+        progress.render = check_render(input, &output, verify, &mut progress.report)?;
     }
     Ok(output)
 }
 
 /// Problems the input already had are warnings; new ones are bugs.
-fn check_structure(input: &[u8], output: &[u8], pages: usize, report: &mut Report) -> Result<()> {
+fn check_structure(
+    input: &[u8],
+    output: &[u8],
+    pages: usize,
+    report: &mut Report,
+) -> Result<Verification, Refusal> {
     let verification = verify::verify(output, pages);
     report.note(verification.to_string());
     if verification.is_ok() {
-        return Ok(());
+        return Ok(verification);
     }
     let baseline = verify::verify(input, pages);
     let regressions = verification.regressions_from(&baseline);
     if !regressions.is_empty() {
-        bail!(
-            "output failed verification with new problems {regressions:?}; nothing written (this is a bug, please report it)"
-        );
+        return Err(Refusal::VerificationRegressed(regressions));
     }
     report.note("warning: the input already had these problems; output written anyway");
-    Ok(())
+    Ok(verification)
 }
 
-fn check_render(input: &[u8], output: &[u8], verify: Verify, report: &mut Report) -> Result<()> {
+fn check_render(
+    input: &[u8],
+    output: &[u8],
+    verify: Verify,
+    report: &mut Report,
+) -> Result<Option<Comparison>, Refusal> {
     let Verify::Render { preset, strict } = verify else {
-        return Ok(());
+        return Ok(None);
     };
-    match verify::render::compare(input, output, preset) {
-        Ok(comparison) => {
-            report.note(comparison.to_string());
-            if comparison.below_floor().is_empty() {
-                return Ok(());
-            }
-            if strict {
-                bail!("pages below the similarity floor; nothing written (--strict)");
-            }
-            report.note("warning: pages below the similarity floor; output written anyway");
+    let comparison = match verify::render::compare(input, output, preset) {
+        Ok(comparison) => comparison,
+        Err(e) => {
+            report.note(format!("render: skipped, {e}"));
+            return Ok(None);
         }
-        Err(e) => report.note(format!("render: skipped, {e}")),
+    };
+    report.note(comparison.to_string());
+    if !comparison.below_floor().is_empty() {
+        if strict {
+            return Err(Refusal::BelowSimilarityFloor(comparison));
+        }
+        report.note("warning: pages below the similarity floor; output written anyway");
     }
-    Ok(())
+    Ok(Some(comparison))
 }
 
 #[cfg(test)]
@@ -156,14 +208,15 @@ mod tests {
         };
         let done = compress(&input, &config, verify).unwrap();
         assert!(done.output.len() <= input.len());
-        assert!(done.report.notes.iter().any(|n| n.starts_with("verify:")));
-        assert!(done.report.notes.iter().any(|n| n.starts_with("render:")));
+        assert!(done.verification.is_some_and(|v| v.is_ok()));
+        assert!(done.render.is_some_and(|r| r.min().unwrap_or(0.0) > 0.99));
     }
 
     #[test]
     fn unparseable_input_is_rejected_with_its_report() {
         let config = Config::preset(Preset::Less);
         let rejected = compress(b"not a pdf", &config, Verify::Structural).unwrap_err();
+        assert!(matches!(rejected.reason, Refusal::Unparseable(_)));
         assert!(rejected.to_string().contains("parsing the input"));
         assert_eq!(rejected.report.notes.len(), 0);
     }

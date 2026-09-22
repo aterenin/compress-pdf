@@ -51,7 +51,7 @@ fn compress_one(cli: &Cli, config: &Config, input_path: &Path) -> Result<()> {
         Ok(compressed) => compressed,
         Err(rejected) => {
             print!("{}", rejected.report);
-            return Err(rejected.reason);
+            return Err(rejected.into());
         }
     };
     let (buf, report) = (done.output, done.report);

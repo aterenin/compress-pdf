@@ -101,8 +101,8 @@ main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
              usage -> images -> fonts -> strip -> structure
 ```
 
-- `src/lib.rs` exposes `compress`, `config`, `pipeline`, `report` and
-  `verify`; that is the crate's API, and the binary and the test harnesses
+- `src/lib.rs` exposes `compress`, `config`, `error`, `pipeline`, `report`
+  and `verify`; that is the crate's API, and the binary and the test harnesses
   are clients of it. `stages`, `font` and `content` are private
   implementation. The `Stage` trait and `Context` are crate-private too,
   so stages can change without an API break. Public structs that the
@@ -114,8 +114,15 @@ main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
   for a document, as a library function. It loads the bytes, runs the
   pipeline, serializes, applies the structural check with the input as
   baseline, and the render check when asked, returning the output and the
-  report or a rejection carrying the report. `main` only reads files,
-  calls it, and writes or prints.
+  report or a rejection carrying the report. The result also carries the
+  structural check and the page comparison as values, so a program does
+  not parse notes. `main` only reads files, calls it, and writes or prints.
+- `src/error.rs` is `Refusal`, the one error type: why a document was not
+  compressed or its output not accepted, as variants a program can match
+  on, with `Display` giving the message the command prints. Anything a
+  stage or the writer fails with is `Internal`. Refusal reasons are typed
+  because a caller decides on them; report actions, kept reasons and notes
+  stay strings because they exist to be read.
 - `src/content.rs` is the content-stream lexer that produces the canonical
   form the structure stage stores. It never reads `Config`.
 - `src/font/` is font-program machinery independent of the pipeline:
