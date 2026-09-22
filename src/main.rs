@@ -42,7 +42,7 @@ fn compress_one(cli: &Cli, config: &Config, input_path: &Path) -> Result<()> {
         fs::read(input_path).with_context(|| format!("reading {}", input_path.display()))?;
     let verify = match cli.verify {
         VerifyArg::Render => Verify::Render {
-            preset: cli.preset.into(),
+            preset: cli.preset(),
             strict: cli.strict,
         },
         VerifyArg::Structural => Verify::Structural,

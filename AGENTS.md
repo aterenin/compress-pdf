@@ -108,7 +108,8 @@ main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
   so stages can change without an API break. Public structs that the
   library fills in (`Config`, `Report` and its rows, `Compressed`,
   `Verification`, `Comparison`) are `#[non_exhaustive]`, so a field can be
-  added in a minor release.
+  added in a minor release; so are the enums `Preset`, `ColorConversion`,
+  `Verify` and `Category`, so a variant can be.
 - `src/compress.rs` is the one-call entry point: what the command line does
   for a document, as a library function. It loads the bytes, runs the
   pipeline, serializes, applies the structural check with the input as
@@ -277,7 +278,8 @@ force-recompress option.
 Under the scope rule, `Config` carries only what the presets use. Codec sets
 are drawn from jpeg, flate, g4, jbig2, source. Color conversion is none or
 RGB. Strip flags are the eight in the mapping table. The command line exposes
-the preset plus an override for every `Config` field: `--dpi` and
+the preset as one of `--less`, `--standard` (the default) and `--more`,
+plus an override for every `Config` field: `--dpi` and
 `--threshold-dpi` (all classes at once), `--quality`, the three codec lists,
 `--color-conversion`, `--strip`, and a `true`/`false` flag for each boolean
 (clipping, color reduction, the four font passes, resource cleanup,

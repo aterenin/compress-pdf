@@ -23,9 +23,18 @@ pub struct Cli {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Preset to start from. Individual flags below override preset values.
-    #[arg(short, long, value_enum, default_value_t = PresetArg::Standard)]
-    pub preset: PresetArg,
+    /// Mild preset: keep resolution up to 400 dpi, JPEG q75, no stripping.
+    #[arg(long, group = "preset")]
+    pub less: bool,
+
+    /// Balanced preset, the default: 150 dpi, JPEG q60, strip non-visual data.
+    #[arg(long, group = "preset")]
+    pub standard: bool,
+
+    /// Aggressive preset: 72 dpi, JPEG q60, force RGB, strip the structure
+    /// tree too. Individual flags below override preset values.
+    #[arg(long, group = "preset")]
+    pub more: bool,
 
     /// Target resolution after downsampling, applied to all image classes.
     #[arg(long, value_name = "DPI")]
@@ -143,26 +152,6 @@ impl From<ColorArg> for ColorConversion {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum PresetArg {
-    /// Mild: keep resolution up to 400 dpi, JPEG q75, no stripping.
-    Less,
-    /// Balanced: 150 dpi, JPEG q60, strip non-visual data. The default.
-    Standard,
-    /// Aggressive: 72 dpi, JPEG q60, force RGB, strip structure tree too.
-    More,
-}
-
-impl From<PresetArg> for Preset {
-    fn from(p: PresetArg) -> Self {
-        match p {
-            PresetArg::Less => Preset::Less,
-            PresetArg::Standard => Preset::Standard,
-            PresetArg::More => Preset::More,
-        }
-    }
-}
-
 /// Replace `dst` when the flag was given.
 fn set<T>(dst: &mut T, flag: Option<T>) {
     if let Some(v) = flag {
@@ -173,7 +162,7 @@ fn set<T>(dst: &mut T, flag: Option<T>) {
 impl Cli {
     /// Preset plus command-line overrides.
     pub fn config(&self) -> Config {
-        let mut cfg = Config::preset(self.preset.into());
+        let mut cfg = Config::preset(self.preset());
         for d in [&mut cfg.bitonal_dpi, &mut cfg.gray_dpi, &mut cfg.color_dpi] {
             set(&mut d.target, self.dpi);
             set(&mut d.threshold, self.threshold_dpi);
@@ -204,6 +193,17 @@ impl Cli {
         set(&mut cfg.strip, self.strip);
         debug_assert!(Dpi::is_sane(&cfg.color_dpi));
         cfg
+    }
+
+    /// The preset the flags name; `standard` when none is given.
+    pub fn preset(&self) -> Preset {
+        if self.less {
+            Preset::Less
+        } else if self.more {
+            Preset::More
+        } else {
+            Preset::Standard
+        }
     }
 
     /// Where `input`'s output goes: the named file, or inside the named
@@ -255,8 +255,7 @@ mod tests {
     #[test]
     fn flags_override_preset_fields() {
         let cfg = parse(&[
-            "--preset",
-            "less",
+            "--less",
             "--continuous-codecs",
             "jpeg,flate,source",
             "--indexed-codecs",
@@ -289,6 +288,15 @@ mod tests {
         );
         // Untouched fields keep the preset's values.
         assert_eq!(cfg.bitonal, Config::preset(Preset::Less).bitonal);
+    }
+
+    #[test]
+    fn preset_flags_are_exclusive_and_default_to_standard() {
+        assert_eq!(parse(&[]).preset(), Preset::Standard);
+        assert_eq!(parse(&["--standard"]).preset(), Preset::Standard);
+        assert_eq!(parse(&["--less"]).preset(), Preset::Less);
+        assert_eq!(parse(&["--more"]).preset(), Preset::More);
+        assert!(Cli::try_parse_from(["compress-pdf", "in.pdf", "--less", "--more"]).is_err());
     }
 
     #[test]

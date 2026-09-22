@@ -160,6 +160,7 @@ fn preset_name(p: Preset) -> &'static str {
         Preset::Less => "less",
         Preset::Standard => "standard",
         Preset::More => "more",
+        _ => "unknown",
     }
 }
 

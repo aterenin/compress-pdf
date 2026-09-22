@@ -159,6 +159,7 @@ impl fmt::Debug for Strip {
 
 /// Target color space for images. Only what a preset uses exists here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorConversion {
     None,
     /// Convert every color image to RGB through ICC profiles.
@@ -232,6 +233,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Preset {
     Less,
     Standard,

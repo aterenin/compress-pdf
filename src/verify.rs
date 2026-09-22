@@ -62,6 +62,7 @@ impl fmt::Display for Verification {
 /// Problem categories, for comparing an output against its input. Object
 /// numbers change between the two, so comparison is by category count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum Category {
     Parse,
     PageCount,

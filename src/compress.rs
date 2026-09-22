@@ -15,6 +15,7 @@ use crate::{pipeline, verify};
 
 /// How much of the output to check before handing it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Verify {
     /// Re-parse the output with a reader that shares no code with the
     /// writer; a problem the input did not have rejects the output.
