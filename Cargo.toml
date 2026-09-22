@@ -4,6 +4,22 @@ version = "0.1.0"
 edition = "2024"
 description = "Command-line PDF compressor: image recompression, font subsetting, and structural cleanup with presets"
 license = "MIT"
+repository = "https://github.com/aterenin/compress-pdf"
+readme = "README.md"
+keywords = ["pdf", "compression", "cli", "images", "fonts"]
+categories = ["command-line-utilities", "compression", "multimedia::images"]
+rust-version = "1.92"
+# What a user of the crate needs; the design notes, CI and evaluation
+# tooling stay in the repository.
+exclude = [
+    ".github/",
+    ".cargo/",
+    ".kissconfig",
+    "CLAUDE.md",
+    "evals.toml",
+    "evals-expectations.toml",
+    "examples/",
+]
 
 [lib]
 name = "compress_pdf"
@@ -61,3 +77,4 @@ walkdir = "2.5"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+strip = true

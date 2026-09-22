@@ -1,7 +1,10 @@
-//! compress-pdf: a stage pipeline that shrinks PDF files.
+#![doc = include_str!("../README.md")]
 //!
-//! The binary (`src/main.rs`) and the evaluation harnesses are thin clients
-//! of this crate. See CLAUDE.md for the design.
+//! ---
+//!
+//! The library behind the binary: a stage pipeline that shrinks PDF files.
+//! `src/main.rs` and the evaluation harnesses are thin clients of it; the
+//! design is described in the repository's CLAUDE.md.
 
 pub mod config;
 pub mod content;

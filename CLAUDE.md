@@ -26,10 +26,15 @@ kiss check
 cargo run -- some.pdf --dry-run -v
 ```
 
-The crate is MIT licensed; dependencies are MIT, BSD or MIT/Apache dual
-licensed, and no code is copied from other projects.
+The crate is MIT licensed; dependencies carry permissive licenses (MIT,
+Apache, BSD, Zlib, IJG for mozjpeg, Unicode for a few ICU tables), and no
+code is copied from other projects.
 
-Rust edition 2024. A change is done when `cargo test`, `clippy -D warnings`,
+Rust edition 2024, `rust-version` 1.92 (the oldest the hayro crates
+accept; checked by a CI job on that toolchain). The README doubles as the
+crate-level documentation through `include_str!` in `src/lib.rs`, and
+`Cargo.toml` excludes the design notes, CI and evaluation tooling from the
+published package. A change is done when `cargo test`, `clippy -D warnings`,
 `fmt --check`, and `kiss check` all pass. Iterate until they do.
 
 ### kiss

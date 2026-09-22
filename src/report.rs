@@ -18,7 +18,7 @@ pub struct ImageRow {
     /// Minimum effective resolution across all placements, if known.
     pub effective_dpi: Option<f32>,
     pub bytes_in: usize,
-    /// Short verb: "kept", "downsampled", "recoded", "gray", "skipped: <why>".
+    /// Short verb: "kept", "downsampled", "recoded", "gray", "skipped: `<why>`".
     pub action: String,
     pub filter_out: String,
     pub bytes_out: usize,
@@ -32,7 +32,7 @@ pub struct FontRow {
     /// Program kind: Type1, TrueType, CFF, CIDFontType0C, OpenType.
     pub program: String,
     pub bytes_in: usize,
-    /// Short verb: "kept", "unembedded", "subset", "merged", "cff", "kept: <why>".
+    /// Short verb: "kept", "unembedded", "subset", "merged", "cff", "kept: `<why>`".
     pub action: String,
     pub bytes_out: usize,
 }
