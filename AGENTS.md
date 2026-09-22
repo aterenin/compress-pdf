@@ -94,13 +94,22 @@ through Rust bindings.
 ### Data flow
 
 ```
-main -> Cli -> Config -> pipeline::run(doc, config, report) -> save_modern -> verify -> write
+main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
+                              |
+            pipeline::run -> pipeline::serialize -> verify (structural, render)
                              |
              usage -> images -> fonts -> strip -> structure
 ```
 
-- `src/lib.rs` exposes `config`, `pipeline`, `report`, `stages`, `verify`,
-  `font` and `content`; the binary and the test harnesses are clients of it.
+- `src/lib.rs` exposes `compress`, `config`, `pipeline`, `report`,
+  `stages`, `verify`, `font` and `content`; the binary and the test
+  harnesses are clients of it.
+- `src/compress.rs` is the one-call entry point: what the command line does
+  for a document, as a library function. It loads the bytes, runs the
+  pipeline, serializes, applies the structural check with the input as
+  baseline, and the render check when asked, returning the output and the
+  report or a rejection carrying the report. `main` only reads files,
+  calls it, and writes or prints.
 - `src/content.rs` is the content-stream lexer that produces the canonical
   form the structure stage stores. It never reads `Config`.
 - `src/font/` is font-program machinery independent of the pipeline:
