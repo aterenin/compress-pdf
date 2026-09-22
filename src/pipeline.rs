@@ -271,7 +271,11 @@ fn page_tree_is_intact(doc: &Document) -> bool {
     true
 }
 
-pub fn serialize(doc: &mut Document, input: &[u8], report: &mut Report) -> Result<Vec<u8>> {
+pub fn serialize(
+    doc: &mut Document,
+    input: &[u8],
+    report: &mut Report,
+) -> Result<Vec<u8>, Refusal> {
     // Object streams and an xref stream, packed as tightly as lopdf allows:
     // its defaults (100 objects per stream, level 6) leave a few percent on
     // the table against what good producers emit.

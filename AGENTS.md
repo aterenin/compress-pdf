@@ -299,9 +299,9 @@ run; the exit status is then non-zero.
 
 ### Testing
 
-The crate is a library (`src/lib.rs`: config, pipeline, report, stages) plus
-a thin binary (`src/main.rs`), so every test layer calls the pipeline
-in-process rather than shelling out.
+The crate is a library (`src/lib.rs`: compress, config, error, pipeline,
+report, verify) plus a thin binary (`src/main.rs`), so every test layer
+calls the pipeline in-process rather than shelling out.
 
 Three layers, all run by `cargo test`:
 
@@ -529,8 +529,9 @@ Fixed for v1 and expected to be revisited against evals results.
 
 ## Implementation status
 
-The crate is split into `src/lib.rs` (config, pipeline, report, stages) and
-a thin `src/main.rs`. It runs end to end and re-reads its own output.
+The crate is split into `src/lib.rs` (compress, config, error, pipeline,
+report, verify public; stages, font and content private) and a thin
+`src/main.rs`. It runs end to end and re-reads its own output.
 `main`, `cli`, `config`, `pipeline`, and `report` are complete for the
 design above, and every module carries unit tests. `tests/evals.rs` is in
 place: `cargo test --test evals` runs the `quick` subset under all three
@@ -563,7 +564,7 @@ output, since hayro's literal-string lexer reads some of lopdf's escaped
 binary literals differently (an Indexed palette rendered as gray indices
 until then). The full corpus (`EVALS_SUBSET=full`, standard preset, release
 build) runs in about 20 seconds without rendering and about 12 minutes
-with `EVALS_RENDER=1`; `evals-expectations.toml` lists 48 files: ones lopdf
+with `EVALS_RENDER=1`; `evals-expectations.toml` lists 47 files: ones lopdf
 cannot load, loads into a broken graph, or hangs on, two where its loader
 drops a stream with a wrong `/Length` and verification blocks the
 resulting content loss, four where the render comparison flags a
@@ -580,7 +581,7 @@ million pixels so a huge media box cannot do the same. Stages:
 | usage | done: CTM and bounding-box clip walk over page content, form XObjects (with `/Matrix` and `/BBox`), tiling patterns, and annotation appearance streams; `ImageUsage` holds pixels, placements with rendered size and visible fraction, `min_dpi()` and `crop_box()`; tested for two placements, rectangular clip, `Q` restoring the clip, form matrices, and undrawn images | |
 | images | second milestone: classify; decode raw/Flate/LZW samples at 1 to 16 bits in Device, ICCBased (by N), CalRGB/CalGray and Indexed spaces with any `Decode` array; Separation, DeviceN and Lab samples mapped into their device alternate through PDF functions of types 0, 2, 3 and 4 (own evaluator with a PostScript calculator, memoized per distinct sample tuple), with the dictionary rewritten to the alternate space, and indexed images over such a base get their palette mapped the same way; indirect `Filter` entries resolved; decode DCT (Gray, RGB, CMYK, YCCK) including Flate-wrapped JPEGs, honoring the `ColorTransform` decode parameter when the codestream has no Adobe marker; decode CCITT (all K modes, `BlackIs1`, indirect `DecodeParms`), embedded JBIG2 with globals, and JPX (codestream color space and depth win; alpha channels, and indexed or mapped dictionary spaces, skipped) via hayro's decoders; CMYK rasters resized with alpha handling off, since the resizer would otherwise premultiply by the K channel; downsample per class rule (Lanczos3; nearest for indices; bitonal by area averaging then a threshold toward the ink color at 30 percent coverage, so thin lines thicken rather than vanish); encode Flate with per-row PNG predictor choice, JPEG (Gray, RGB, CMYK) via mozjpeg, CCITT G4 via `fax`, JBIG2 generic region via `jbig2enc-rust`; unwrapped-JPEG passthrough candidate; color complexity reduction (flat images to one pixel, gray RGB/CMYK to gray, two-level gray to bitonal; opaque soft masks removed, two-level soft masks turned into stencil masks); color conversion to RGB for the `more` preset (embedded ICC profiles through moxcms, DeviceCMYK through the Neugebauer model; gray stays gray); best-of with never-grow; soft and stencil masks resized with their parent; clipping to the crop box from `usage`, applied only when the invisible fraction of the source bytes outweighs the wrapper form, with the cropped image placed behind a form XObject that keeps every existing placement valid and masks cropped alongside (`Matte` masks refuse); per-image report rows | Remaining: JPX and CCITT/JBIG2 data in mapped spaces; JBIG2 symbol mode with shared globals once a lossless symbol encoder is available. |
 | fonts | third milestone: every embedded program gets a report row; Type 1 programs converted to CFF (`Type1C`) under the never-grow rule, then subset like any CFF; subsetting of TrueType, CFF, CIDFontType0C and OpenType programs with glyph IDs retained (HarfBuzz), driven by the strings the usage walk recorded, with the union of glyphs over every font dictionary sharing a program (a TrueType or OpenType program is normalized before anything reads it, without changing any table's content: directory sorted by tag with records pointing outside the file dropped, `head` version set to 1.0, `maxp` glyph count capped to what `loca` holds; each of these was seen in the corpus and each makes HarfBuzz and read-fonts reject the whole font; for an OpenType program with CFF outlines under a CID font, both the `CIDToGIDMap` and the CFF charset readings are kept, since the subtype is not consulted; embedded CMaps may use `bfchar` and `bfrange`, read as CIDs); programs of fonts a default appearance string names in the AcroForm default resources, of fonts in Type 3 resources, and of fonts the walk never saw, are left alone; hints are removed unless read-fonts finds a stem hint after a path operator in any charstring, which HarfBuzz's removal mishandles; the program stream is rewritten Flate-compressed under the never-grow rule and untagged fonts get a subset tag derived from the glyph set; standard-14 unembedding for simple fonts (name aliases folded to the canonical 14, encoding must stand on its own: a standard encoding name, a differences dictionary with known glyph names, or a non-symbolic descriptor; Symbol and ZapfDingbats only with their built-in encoding), renaming font and descriptor to the canonical name; the usage stage records the strings shown with each font | Only Type 1 programs whose conversion fails stay unconverted; those are reported. Subsetting still fails on 13 corpus programs: CFF programs the bundled HarfBuzz 8.2.2 refuses (see open decisions), TrueType programs whose `glyf` is empty (nothing to gain; fonts used to hide OCR text look like this, so they are left whole rather than given a substitute), and three single-file oddities. |
-| strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, the rest on any object | |
+| strip | done: every flag removes the keys in the mapping table; catalog keys on the catalog, page keys on page dictionaries, image keys on image streams, the rest on streams and typed dictionaries (a resource dictionary is keyed by resource name, and dvips names fonts `/B`) | |
 | structure | done: content streams (page contents, forms, patterns, Type 3 glyph procedures) rewritten in canonical token form and re-compressed when smaller, under the never-grow rule per stream; unused resource entries removed (pages, form XObjects, tiling patterns, Type 3 fonts; owners whose content does not decode or parse strictly, inherited resources, and owners whose resources list a Type 3 font, form XObject or pattern without resources of its own, which draws with the owner's, are left alone), streams compressed, duplicate objects merged by canonical form, unreferenced objects pruned, the AcroForm default resources treated as an owner whose content is the set of default appearance strings (fonts only; other categories kept whole; left alone entirely with an XFA entry), references to missing objects removed so renumbering cannot rebind them, renumbered, version raised for JBIG2 | |
 
 A second-pass check ran the standard preset with render verification over
@@ -606,7 +607,8 @@ the pipeline in-process and prints, per preset, one row per file with
 input size, our size and ratio, and one column per reference directory
 with its size and ratio, then totals (a reference's total over the files
 it covers, with our total on the same files and the coverage count).
-No reference outputs exist yet. A full
+One reference exists locally, an online tool's standard-level output for
+the 42 scoring files, not committed. A full
 fetch takes about five minutes and 1.1 GB; re-running retries only failed
 links. `evals.toml` defines the `quick` subset (26 files, 4.7 MB, every
 handled feature at least twice plus seven realistic documents) and the
