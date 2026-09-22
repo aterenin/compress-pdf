@@ -7,7 +7,7 @@
 //!
 //! JBIG2 output uses generic-region coding because the available encoder's
 //! symbol mode substitutes glyphs (lossy) and has no refinement; see the
-//! provisional choices in CLAUDE.md.
+//! provisional choices in AGENTS.md.
 
 use fax::encoder::Encoder as G4Encoder;
 use fax::{Color, VecWriter};

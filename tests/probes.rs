@@ -1,6 +1,6 @@
 //! Probe tests: each synthetic one-variable PDF from `probes/generators.rs`
 //! runs through the pipeline and the design's stated behavior for it is
-//! asserted on the report and the document (CLAUDE.md, "Testing").
+//! asserted on the report and the document (AGENTS.md, "Testing").
 
 #[path = "probes/generators.rs"]
 mod generators;

@@ -150,7 +150,7 @@ mod raster_tests {
 /// Resample to `width` x `height`. Continuous-tone images use Lanczos3;
 /// palette indices use nearest neighbour; bitonal images are resampled as
 /// gray by area averaging and thresholded toward the ink color (the
-/// provisional choice in CLAUDE.md).
+/// provisional choice in AGENTS.md).
 pub fn downsample(raster: &Raster, width: u32, height: u32) -> Option<Raster> {
     if width == 0 || height == 0 || (width, height) == (raster.width, raster.height) {
         return None;

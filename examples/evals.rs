@@ -1,4 +1,4 @@
-//! `cargo evals <subcommand>`: evaluation tooling (see CLAUDE.md, "Evals tooling").
+//! `cargo evals <subcommand>`: evaluation tooling (see AGENTS.md, "Evals tooling").
 //!
 //! All subcommands are implemented; see the `Cmd` enum.
 

@@ -15,7 +15,6 @@ exclude = [
     ".github/",
     ".cargo/",
     ".kissconfig",
-    "CLAUDE.md",
     "evals.toml",
     "evals-expectations.toml",
     "examples/",
@@ -30,7 +29,7 @@ name = "compress-pdf"
 path = "src/main.rs"
 
 # Corpus evals: a libtest-mimic harness that registers one test per PDF per
-# preset (see CLAUDE.md, "Testing").
+# preset (see AGENTS.md, "Testing").
 [[test]]
 name = "evals"
 harness = false

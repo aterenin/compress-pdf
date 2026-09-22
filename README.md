@@ -13,7 +13,7 @@ To use this package, run `compress-pdf file_to_compress.pdf`. For more options, 
 
 **Development style.** 
 This code is built using evaluation-driven development, and is 100% AI-generated: in particular, this file is the only human-written one in the codebase.
-The high-level compression pipeline is described in [CLAUDE.md](CLAUDE.md), and is human-codesigned to ensure the code's overall structure is sane and makes sense.
+The high-level compression pipeline is described in [AGENTS.md](AGENTS.md), and is human-codesigned to ensure the code's overall structure is sane and makes sense.
 We use [KISS](https://github.com/dsweet99/kiss) as a linter to guard against bad patterns that AI systems sometime have a tendency to use.
 
 **Verification.**

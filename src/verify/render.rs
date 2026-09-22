@@ -1,4 +1,4 @@
-//! Output verification, visual level (CLAUDE.md, "Output verification").
+//! Output verification, visual level (AGENTS.md, "Output verification").
 //!
 //! Every page of the input and of the output is rasterized with `hayro`
 //! at a fixed low resolution, converted to gray, and compared with SSIM

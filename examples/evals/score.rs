@@ -1,7 +1,7 @@
 //! `cargo evals score`: run a subset through the pipeline and compare
 //! output sizes with reference outputs under `evals/reference/<name>/`,
 //! each at the same relative path as its original under `evals/corpus/`
-//! (CLAUDE.md, "Evals tooling").
+//! (AGENTS.md, "Evals tooling").
 
 use std::fs;
 use std::path::Path;

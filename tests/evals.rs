@@ -1,6 +1,6 @@
 //! Corpus evals: one test per PDF per preset over the fetched corpus.
 //!
-//! Selection (see CLAUDE.md, "Testing"):
+//! Selection (see AGENTS.md, "Testing"):
 //! - `EVALS_RENDER=1` also renders every page before and after and fails a
 //!   trial whose pages fall below the preset's similarity floor.
 //! - `EVALS_SUBSET` names a subset from `evals.toml` (default `quick`) or

@@ -1,4 +1,4 @@
-# The four gates a change has to pass (CLAUDE.md, "Toolchain"): formatting,
+# The four gates a change has to pass (AGENTS.md, "Toolchain"): formatting,
 # clippy, kiss, and the tests. Runs on every branch push and on pull
 # requests, and is called by evals.yml before the corpus run. No corpus is fetched here, so the evals
 # harness registers nothing and `cargo test` is the unit and probe tests.

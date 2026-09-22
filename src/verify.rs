@@ -1,4 +1,4 @@
-//! Output verification, structural level (CLAUDE.md, "Output verification").
+//! Output verification, structural level (AGENTS.md, "Output verification").
 //!
 //! Re-reads the serialized output with `hayro-syntax`, a parser that shares
 //! no code with lopdf, and checks that the file is usable: it loads, it has

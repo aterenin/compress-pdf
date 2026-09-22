@@ -1,7 +1,7 @@
 //! Optimization settings expressed as plain data.
 //!
 //! Every knob is a field on [`Config`] so that presets are values rather than
-//! code paths. See CLAUDE.md, section "Presets".
+//! code paths. See AGENTS.md, section "Presets".
 
 use std::fmt;
 use std::ops::BitOr;
