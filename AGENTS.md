@@ -104,7 +104,8 @@ main -> Cli -> Config -> compress::compress(bytes, config, verify) -> write
 
 - `src/lib.rs` exposes `compress`, `config`, `error`, `pipeline`, `report`
   and `verify`; that is the crate's API, and the binary and the test harnesses
-  are clients of it. `stages`, `font` and `content` are private
+  are clients of it. A seventh module, `design`, holds no code: it is this
+  file as a documentation page. `stages`, `font` and `content` are private
   implementation. The `Stage` trait and `Context` are crate-private too,
   so stages can change without an API break. Public structs that the
   library fills in (`Config`, `Report` and its rows, `Compressed`,
@@ -402,7 +403,8 @@ runs the four gates on every branch push and on pull requests from forks
 (one from a branch of this repository already ran on its push):
 `fmt --check`, clippy,
 `kiss check` (version pinned in the workflow) and `cargo test`, which
-without a corpus is the unit and probe tests.
+without a corpus is the unit and probe tests; a second job checks that
+the crate builds on the `rust-version` from `Cargo.toml`.
 `.github/workflows/evals.yml` does not run on ordinary pushes, since the
 corpus is a 1.1 GB download; it runs when a tag is pushed and on manual
 dispatch, where the subset (`full` by default) and the render check (on by
