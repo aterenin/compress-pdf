@@ -5,10 +5,11 @@
 //! in the report. Stages do not call each other. Anything one stage needs from
 //! another travels through `Context` (today: the image usage analysis).
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
-use lopdf::{Document, Object, StringFormat};
+use lopdf::{Document, Object, ObjectId, StringFormat};
 
 use crate::config::Config;
 use crate::error::Refusal;
@@ -127,25 +128,59 @@ fn serialized_len(doc: &mut Document) -> Result<usize> {
 /// `Resources` category dictionary, resolves to a loaded object, and no
 /// content stream came out of the parser empty without a `Length` (a
 /// stream without one is read as empty rather than up to `endstream`).
+/// Only objects a viewer can reach are checked: producers leave orphaned
+/// pages behind (calibre keeps abandoned page dictionaries whose fonts it
+/// dropped), and a dangling reference in one of those loses nothing.
 fn resources_are_intact(doc: &Document) -> bool {
-    doc.objects.values().all(|obj| {
-        let dict = match obj {
-            Object::Dictionary(d) => d,
-            Object::Stream(s) => &s.dict,
-            _ => return true,
-        };
-        dict.get(b"Contents")
-            .ok()
-            .is_none_or(|c| references_resolve(doc, c) && content_streams_loaded(doc, c))
-            && dict
-                .get(b"Resources")
+    reachable(doc)
+        .iter()
+        .filter_map(|id| doc.objects.get(id))
+        .all(|obj| {
+            let dict = match obj {
+                Object::Dictionary(d) => d,
+                Object::Stream(s) => &s.dict,
+                _ => return true,
+            };
+            dict.get(b"Contents")
                 .ok()
-                .is_none_or(|r| resource_entries_resolve(doc, r))
-    })
+                .is_none_or(|c| references_resolve(doc, c) && content_streams_loaded(doc, c))
+                && dict
+                    .get(b"Resources")
+                    .ok()
+                    .is_none_or(|r| resource_entries_resolve(doc, r))
+        })
 }
 
 /// A `Contents` reference (or each one in an array) is a stream that was
 /// read to the end: it has a `Length`, or it has content.
+/// Every object reachable from the trailer by following references.
+fn reachable(doc: &Document) -> HashSet<ObjectId> {
+    let mut seen = HashSet::new();
+    let mut stack = Vec::new();
+    collect_references(&Object::Dictionary(doc.trailer.clone()), &mut stack);
+    while let Some(id) = stack.pop() {
+        if seen.insert(id)
+            && let Ok(obj) = doc.get_object(id)
+        {
+            collect_references(obj, &mut stack);
+        }
+    }
+    seen
+}
+
+fn collect_references(obj: &Object, out: &mut Vec<ObjectId>) {
+    match obj {
+        Object::Reference(id) => out.push(*id),
+        Object::Array(items) => items.iter().for_each(|o| collect_references(o, out)),
+        Object::Dictionary(dict) => dict.iter().for_each(|(_, v)| collect_references(v, out)),
+        Object::Stream(stream) => stream
+            .dict
+            .iter()
+            .for_each(|(_, v)| collect_references(v, out)),
+        _ => {}
+    }
+}
+
 fn content_streams_loaded(doc: &Document, contents: &Object) -> bool {
     match contents {
         Object::Reference(r) => match doc.get_object(*r) {
@@ -387,6 +422,14 @@ mod tests {
             panic!("stream");
         };
         s.dict.set("Length", 0);
+        assert!(resources_are_intact(&doc));
+        // An orphaned page nothing references, with a font that is gone,
+        // is not damage a viewer would see.
+        let orphan_font = doc.new_object_id();
+        doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => orphan_font } },
+        });
         assert!(resources_are_intact(&doc));
     }
 

@@ -555,8 +555,10 @@ a `Contents` or resource-category entry that refers to an object it could
 not load, or a content stream without a `Length` that it read as empty
 (writing such files would drop a page, an image, a font or the page's
 text while the page count still added up; viewers that rebuild the
-cross-reference table recover them). The harness treats these refusals as
-the expected outcome. Content streams are parsed strictly everywhere
+cross-reference table recover them). Only objects reachable from the
+trailer count: calibre leaves orphaned page dictionaries behind whose
+fonts it dropped, and a dangling reference there loses nothing. The
+harness treats these refusals as the expected outcome. Content streams are parsed strictly everywhere
 (`Content::decode_strict`): lopdf's lenient parser stops silently at a
 malformed token (`-.` as a number has been seen), and the usage walk and
 the resource pruning would both read a truncated operation list as "nothing
