@@ -1,6 +1,6 @@
 [package]
 name = "compress-pdf"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Command-line PDF compressor: image recompression, font subsetting, and structural cleanup with presets"
 license = "MIT"
